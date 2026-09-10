@@ -1,5 +1,5 @@
 """Page volontairement mal configurée pour tester Goa Scan de bout en bout."""
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PAGE = b"""<!doctype html><html><head><title>Fixture vuln</title>
 <meta name="generator" content="WordPress 5.2.1">
@@ -35,4 +35,4 @@ class H(BaseHTTPRequestHandler):
         pass
 
 
-HTTPServer(("127.0.0.1", 8765), H).serve_forever()
+ThreadingHTTPServer(("127.0.0.1", 8765), H).serve_forever()

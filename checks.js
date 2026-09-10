@@ -24,6 +24,21 @@
   ]);
   const TRACKER_HOSTS = new Set(['bat.bing.com', 'analytics.tiktok.com', 'px.ads.linkedin.com', 'mc.yandex.ru']);
 
+  const CERT_ERRORS = {
+    ERR_CERT_DATE_INVALID: 'certificat expiré ou pas encore valide',
+    ERR_CERT_COMMON_NAME_INVALID: 'le certificat ne couvre pas ce nom de domaine',
+    ERR_CERT_AUTHORITY_INVALID: 'autorité inconnue ou certificat auto-signé',
+    ERR_CERT_REVOKED: 'certificat révoqué par son autorité',
+    ERR_CERT_WEAK_SIGNATURE_ALGORITHM: 'signature faible (SHA-1 ou MD5)',
+    ERR_CERT_WEAK_KEY: 'clé trop courte',
+    ERR_CERT_VALIDITY_TOO_LONG: 'durée de validité trop longue',
+    ERR_CERT_SYMANTEC_LEGACY: 'ancienne PKI Symantec, retirée des navigateurs',
+    ERR_CERTIFICATE_TRANSPARENCY_REQUIRED: 'certificat absent des journaux Certificate Transparency',
+    ERR_SSL_VERSION_OR_CIPHER_MISMATCH: 'protocole ou chiffrement trop ancien',
+    ERR_SSL_PROTOCOL_ERROR: 'erreur de protocole TLS',
+    ERR_SSL_OBSOLETE_VERSION: 'version de TLS obsolète',
+  };
+
   const isIp = (h) => /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.startsWith('[');
 
   function siteOf(host) {
@@ -56,6 +71,17 @@
       }
       return d;
     }).filter((d) => d.size);
+  }
+
+  // Un joker ne couvre qu'une seule étiquette : *.exemple.fr couvre a.exemple.fr, pas a.b.exemple.fr.
+  function hostMatches(host, names) {
+    const h = String(host).toLowerCase().replace(/^\[|\]$/g, '');
+    return names.some((raw) => {
+      const n = String(raw).toLowerCase();
+      if (!n.startsWith('*.')) return n === h;
+      const rest = n.slice(1);
+      return h.endsWith(rest) && h.length > rest.length && !h.slice(0, -rest.length).includes('.');
+    });
   }
 
   function hostOf(u) {
@@ -146,13 +172,148 @@
       if (!active.size && !passive.size && (dom || net)) add({ cat: 'transport', id: 'mixed', ok: true, title: 'Aucun contenu mixte détecté' });
     }
 
+    // ── Certificat ────────────────────────────────────────────
+    const tls = input.tls;
+    const navError = /CERT|SSL/.test(input.navError || '') ? input.navError : null;
+    if (navError) {
+      const reason = CERT_ERRORS[navError.replace(/^net::/, '')] || 'la connexion sécurisée a échoué';
+      add({
+        cat: 'certificate', id: 'cert-error', sev: 'critical', title: 'Certificat refusé par Chrome',
+        detail: `Motif : ${reason}. Le visiteur voit une page d’avertissement au lieu du site ; le reste de l’analyse est impossible.`,
+        fix: 'Corriger le certificat côté serveur (renouvellement, noms couverts, chaîne complète, autorité reconnue).',
+        items: [navError],
+      });
+    }
+    if (https && tls?.status === 'ok') {
+      const now = input.now ?? Date.now();
+      const day = (t) => new Date(t).toISOString().slice(0, 10);
+      const leaf = tls.chain[0];
+      if (leaf) {
+        const days = Math.floor((leaf.notAfter - now) / 86400000);
+        if (now > leaf.notAfter) {
+          add({
+            cat: 'certificate', id: 'cert-expiry', sev: 'critical', title: `Certificat expiré le ${day(leaf.notAfter)}`,
+            fix: 'Renouveler le certificat et vérifier le renouvellement automatique (certbot, Traefik…).',
+          });
+        } else if (now < leaf.notBefore) {
+          add({ cat: 'certificate', id: 'cert-expiry', sev: 'critical', title: `Certificat pas encore valide (à partir du ${day(leaf.notBefore)})`, fix: 'Vérifier l’horloge du serveur qui l’a émis.' });
+        } else if (days < 14) {
+          add({
+            cat: 'certificate', id: 'cert-expiry', sev: 'high', title: `Certificat expirant dans ${days} jour${days > 1 ? 's' : ''}`,
+            fix: 'Renouveler maintenant : le renouvellement automatique semble en échec.',
+          });
+        } else if (days < 30) {
+          add({
+            cat: 'certificate', id: 'cert-expiry', sev: 'low', title: `Certificat expirant dans ${days} jours`,
+            detail: 'Les autorités automatisées renouvellent en général 30 jours avant l’échéance.',
+            fix: 'Vérifier que le renouvellement automatique tourne.',
+          });
+        } else {
+          add({ cat: 'certificate', id: 'cert-expiry', ok: true, title: `Certificat valide jusqu’au ${day(leaf.notAfter)} (${days} jours)` });
+        }
+
+        const names = leaf.san.length ? leaf.san : [leaf.subject.cn];
+        if (hostMatches(page.hostname, names)) add({ cat: 'certificate', id: 'cert-name', ok: true, title: 'Le certificat couvre ce domaine' });
+        else {
+          add({
+            cat: 'certificate', id: 'cert-name', sev: 'critical', title: 'Le certificat ne couvre pas ce domaine',
+            detail: `${page.hostname} n’apparaît pas dans les noms du certificat.`,
+            fix: 'Émettre un certificat qui inclut ce nom dans ses Subject Alternative Names.',
+            items: names.slice(0, 12),
+          });
+        }
+
+        if (leaf.selfSigned && tls.chain.length === 1) {
+          add({
+            cat: 'certificate', id: 'cert-self', sev: 'high', title: 'Certificat auto-signé',
+            detail: 'Aucune autorité reconnue ne l’a émis : impossible de distinguer ce serveur d’un imposteur.',
+            fix: 'Utiliser un certificat d’une autorité publique (Let’s Encrypt) ou d’une PKI interne déployée sur les postes.',
+          });
+        }
+
+        if (/md5|sha1/i.test(leaf.sigAlg)) {
+          add({
+            cat: 'certificate', id: 'cert-sig', sev: 'high', title: 'Signature du certificat faible',
+            detail: 'MD5 et SHA-1 permettent de forger des collisions : un certificat frauduleux peut hériter de la signature.',
+            fix: 'Réémettre le certificat signé en SHA-256 ou plus.',
+            items: [leaf.sigAlg],
+          });
+        }
+
+        const k = leaf.key;
+        const weakKey = (k.type === 'RSA' && k.bits < 2048) || (k.type === 'EC' && k.bits < 256);
+        const keyLabel = k.type === 'EC' ? `EC ${k.curve}` : `${k.type} ${k.bits} bits`;
+        if (weakKey) {
+          add({
+            cat: 'certificate', id: 'cert-key', sev: 'high', title: `Clé trop courte (${keyLabel})`,
+            fix: 'Générer une clé RSA 2048 bits minimum, ou mieux ECDSA P-256.',
+          });
+        } else {
+          add({ cat: 'certificate', id: 'cert-key', ok: true, title: `Clé ${keyLabel}, signature ${leaf.sigAlg}` });
+        }
+
+        if ((leaf.notAfter - leaf.notBefore) / 86400000 > 398) {
+          add({
+            cat: 'certificate', id: 'cert-lifetime', sev: 'low', title: 'Durée de validité supérieure à 398 jours',
+            detail: 'Les navigateurs refusent les certificats publics de plus de 398 jours ; toléré seulement pour une PKI interne.',
+            fix: 'Réduire la durée de vie et automatiser le renouvellement.',
+          });
+        }
+        if (leaf.san.some((n) => n.startsWith('*.'))) {
+          add({
+            cat: 'certificate', id: 'cert-wildcard', title: 'Certificat wildcard',
+            detail: 'La même clé couvre tous les sous-domaines : compromise sur un seul serveur, elle les expose tous.',
+          });
+        }
+        const staleCa = tls.chain.slice(1).filter((c) => now > c.notAfter);
+        if (staleCa.length) {
+          add({
+            cat: 'certificate', id: 'cert-chain', sev: 'high', title: 'Certificat intermédiaire expiré',
+            fix: 'Mettre à jour la chaîne servie par le serveur.',
+            items: staleCa.map((c) => c.subject.cn || c.subject.dn),
+          });
+        }
+      }
+
+      if (/^TLS 1(\.[01])?$/.test(tls.protocol)) {
+        add({
+          cat: 'certificate', id: 'tls-protocol', sev: 'high', title: `Protocole obsolète (${tls.protocol})`,
+          fix: 'N’accepter que TLS 1.2 et TLS 1.3.',
+        });
+      } else if (tls.protocol) {
+        add({ cat: 'certificate', id: 'tls-protocol', ok: true, title: `Protocole ${tls.protocol}` });
+      }
+      // Échange RSA statique = pas de confidentialité persistante ; hors GCM/ChaCha20 = CBC, sans AEAD.
+      const oldKex = tls.keyExchange === 'RSA';
+      const oldCipher = !!tls.cipher && !/GCM|CHACHA20|POLY1305/i.test(tls.cipher);
+      if (oldKex || oldCipher) {
+        add({
+          cat: 'certificate', id: 'tls-cipher', sev: 'medium', title: 'Suite de chiffrement obsolète',
+          detail: oldKex
+            ? 'Échange de clés RSA statique : une clé privée volée plus tard déchiffre tout le trafic enregistré.'
+            : 'Chiffrement en mode CBC, sans AEAD : historiquement exposé aux attaques par oracle de padding.',
+          fix: 'Privilégier ECDHE avec AES-GCM ou ChaCha20-Poly1305.',
+          items: [tls.keyExchange, tls.cipher].filter(Boolean),
+        });
+      }
+      if (tls.ct === 'not-compliant') {
+        add({
+          cat: 'certificate', id: 'tls-ct', sev: 'medium', title: 'Certificat non conforme à Certificate Transparency',
+          detail: 'Le certificat n’a pas été publié dans assez de journaux publics : un certificat frauduleux passerait inaperçu.',
+          fix: 'Réémettre le certificat auprès d’une autorité qui journalise (toutes les autorités publiques le font).',
+        });
+      }
+    } else if (https && tls?.status === 'error' && !navError) {
+      add({ cat: 'certificate', id: 'cert-unavailable', title: 'Certificat non analysé', detail: tls.error || '' });
+    }
+
     // ── En-têtes de sécurité ──────────────────────────────────
-    if (!h) {
+    if (!h && !navError) {
       add({
         cat: 'headers', id: 'no-headers', title: 'En-têtes de réponse indisponibles',
         detail: 'Ni la capture au chargement ni la requête de secours n’ont abouti. Rechargez la page puis relancez l’analyse.',
       });
-    } else {
+    } else if (h) {
       const headerPolicies = parseCsp(h['content-security-policy']);
       const policies = headerPolicies.concat((dom?.metaCsp || []).flatMap(parseCsp));
       const scriptSrc = (p) => p.get('script-src') || p.get('default-src');
@@ -490,6 +651,7 @@
     // ── Score ─────────────────────────────────────────────────
     let score = 100 - findings.filter((f) => !f.ok).reduce((s, f) => s + WEIGHT[f.sev], 0);
     if (!https) score = Math.min(score, 40);
+    if (navError) score = Math.min(score, 20);
     score = Math.max(0, score);
 
     const counts = Object.fromEntries(ORDER.map((s) => [s, findings.filter((f) => !f.ok && f.sev === s).length]));
@@ -536,7 +698,7 @@
     return tech;
   }
 
-  const api = { analyze, detectTech, parseCsp, siteOf, isTracker, cmpVer, gradeOf };
+  const api = { analyze, detectTech, parseCsp, siteOf, isTracker, cmpVer, gradeOf, hostMatches };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.GoaChecks = api;
 })(globalThis);

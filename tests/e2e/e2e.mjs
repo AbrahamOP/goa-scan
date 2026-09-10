@@ -1,8 +1,9 @@
 import puppeteer from 'puppeteer-core';
+import fs from 'node:fs';
 
 const EXT = new URL('../../', import.meta.url).pathname;
 const OUT = process.env.OUT || '/tmp/goa-scan-shots/';
-await import('node:fs').then((fs) => fs.mkdirSync(OUT, { recursive: true }));
+fs.mkdirSync(OUT, { recursive: true });
 const TARGETS = [
   { name: 'fixture', url: 'http://127.0.0.1:8765/' },
   { name: 'example', url: 'https://example.com/' },
@@ -61,6 +62,10 @@ try {
       await report.screenshot({ path: `${OUT}${t.name}-open.png` });
     }
     if (t.name === 'github') {
+      await report.evaluate(() => { state.active = 'cert'; renderTabs(); renderPanel(); });
+      await report.screenshot({ path: `${OUT}${t.name}-cert-noperm.png` });
+      await report.evaluate(() => { state.active = 'summary'; renderTabs(); renderPanel(); });
+
       await report.evaluate(() => document.body.classList.add('full'));
       await report.setViewport({ width: 1100, height: 900 });
       await report.screenshot({ path: `${OUT}${t.name}-full.png`, fullPage: true });

@@ -104,6 +104,15 @@ function onMainCompleted(d) {
   touch(d.tabId);
 }
 
+// Certificat refusé, DNS introuvable… : Chrome affiche une page d'erreur à laquelle
+// rien ne peut s'attacher, l'erreur réseau est la seule trace.
+function onMainError(d) {
+  const rec = tabs.get(d.tabId);
+  if (!rec || rec.requestId !== d.requestId) return;
+  rec.error = d.error;
+  touch(d.tabId);
+}
+
 const all = { urls: ['<all_urls>'] };
 const main = { urls: ['<all_urls>'], types: ['main_frame'] };
 
@@ -111,6 +120,7 @@ chrome.webRequest.onBeforeRequest.addListener((d) => { ready.then(() => onReques
 chrome.webRequest.onHeadersReceived.addListener((d) => { ready.then(() => onMainHeaders(d)); }, main, ['responseHeaders']);
 chrome.webRequest.onBeforeRedirect.addListener((d) => { ready.then(() => onMainRedirect(d)); }, main);
 chrome.webRequest.onCompleted.addListener((d) => { ready.then(() => onMainCompleted(d)); }, main);
+chrome.webRequest.onErrorOccurred.addListener((d) => { ready.then(() => onMainError(d)); }, main);
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   ready.then(() => {

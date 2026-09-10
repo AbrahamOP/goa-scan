@@ -1,11 +1,12 @@
 'use strict';
-/* global GoaChecks, collectPage, collectGlobals */
+/* global GoaChecks, GoaCert, collectPage, collectGlobals */
 // Goa Scan — popup et rapport complet (même page, ouverte avec ?tab=<id>).
 // Tout ce qui vient de la page analysée est inséré en textContent, jamais en HTML.
 
 const SEV_LABEL = { critical: 'Critique', high: 'Haute', medium: 'Moyenne', low: 'Faible', info: 'Info' };
 const TABS = [
   { id: 'summary', label: 'Synthèse' },
+  { id: 'cert', label: 'Certificat', cats: ['certificate'] },
   { id: 'headers', label: 'En-têtes', cats: ['transport', 'headers', 'exposure'] },
   { id: 'cookies', label: 'Cookies', cats: ['cookies'] },
   { id: 'content', label: 'Contenu', cats: ['content'] },
@@ -27,7 +28,7 @@ function el(tag, props, ...kids) {
     else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
     else n.setAttribute(k, v === true ? '' : String(v));
   }
-  for (const c of kids.flat()) if (c != null && c !== false) n.append(c instanceof Node ? c : String(c));
+  for (const c of kids.flat(Infinity)) if (c != null && c !== false) n.append(c instanceof Node ? c : String(c));
   return n;
 }
 
@@ -35,9 +36,13 @@ function el(tag, props, ...kids) {
 
 const stripHash = (u) => String(u).split('#')[0];
 
+// Une page figée ou un serveur lent ne doivent pas bloquer l'analyse entière.
+const TIMEOUT = 6000;
+const withTimeout = (p) => Promise.race([p, new Promise((resolve) => setTimeout(() => resolve(null), TIMEOUT))]);
+
 async function runInTab(tabId, func, world) {
   try {
-    const [res] = await chrome.scripting.executeScript({ target: { tabId }, func, world });
+    const [res] = await withTimeout(chrome.scripting.executeScript({ target: { tabId }, func, world })) || [];
     return res?.result ?? null;
   } catch {
     return null; // page protégée (Chrome Web Store, PDF, chrome://…)
@@ -46,7 +51,7 @@ async function runInTab(tabId, func, world) {
 
 async function fetchSecurityTxt(url) {
   try {
-    const r = await fetch(new URL('/.well-known/security.txt', url), { credentials: 'omit', cache: 'no-store' });
+    const r = await fetch(new URL('/.well-known/security.txt', url), { credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(TIMEOUT) });
     if (!r.ok) return false;
     return /^\s*contact\s*:/im.test((await r.text()).slice(0, 20000));
   } catch {
@@ -57,11 +62,74 @@ async function fetchSecurityTxt(url) {
 // Secours quand la page a été chargée avant l'extension : on redemande le document, sans cookies.
 async function refetchHeaders(url) {
   try {
-    const r = await fetch(url, { credentials: 'omit', cache: 'no-store' });
+    const r = await fetch(url, { credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(TIMEOUT) });
     r.body?.cancel();
     return { headers: [...r.headers].map(([name, value]) => ({ name, value })), status: r.status };
   } catch {
     return null;
+  }
+}
+
+// Certificat : Chrome ne l'expose aux extensions que via le protocole DevTools, et
+// seulement par le domaine Network (Security leur est fermé). Permission optionnelle,
+// attachement de quelques centaines de ms, puis détachement.
+
+// Paramètres TLS : une requête sonde HEAD vers la même origine, sans cookies, dont on
+// ne garde que securityDetails. Si la CSP de la page la bloque, on garde la chaîne seule.
+function probeSecurityDetails(target, origin) {
+  return new Promise((resolve) => {
+    const done = (v) => { clearTimeout(timer); chrome.debugger.onEvent.removeListener(onEvent); resolve(v); };
+    const onEvent = (src, method, p) => {
+      if (src.tabId === target.tabId && method === 'Network.responseReceived' && p.response?.securityDetails && p.response.url.startsWith(origin)) {
+        done(p.response.securityDetails);
+      }
+    };
+    const timer = setTimeout(() => done(null), 3000);
+    chrome.debugger.onEvent.addListener(onEvent);
+    const expression = `fetch(${JSON.stringify(origin + '/')}, { method: 'HEAD', cache: 'no-store', credentials: 'omit' }).catch(() => {})`;
+    chrome.debugger.sendCommand(target, 'Runtime.evaluate', { expression, silent: true }).catch(() => done(null));
+  });
+}
+
+async function scanTls(tab) {
+  if (!tab.url.startsWith('https:')) return null;
+  if (!(await chrome.permissions.contains({ permissions: ['debugger'] }))) return { status: 'no-permission' };
+  const target = { tabId: tab.id };
+  const origin = new URL(tab.url).origin;
+  try {
+    await chrome.debugger.attach(target, '1.3');
+  } catch (e) {
+    return { status: 'error', error: `Attachement impossible : ${e.message}` };
+  }
+  try {
+    await chrome.debugger.sendCommand(target, 'Network.enable');
+    const d = await probeSecurityDetails(target, origin);
+    const r = await chrome.debugger.sendCommand(target, 'Network.getCertificate', { origin }).catch(() => null);
+    const ders = r?.tableNames || [];
+    if (!d && !ders.length) return { status: 'error', error: 'Chrome n’a renvoyé ni certificat ni paramètres TLS pour cette origine.' };
+    const chain = [];
+    for (const der of ders.slice(0, 6)) {
+      try { chain.push({ ...GoaCert.parseCertificate(der), sha256: await GoaCert.fingerprint(der) }); } catch { /* certificat illisible : ignoré */ }
+    }
+    return {
+      status: 'ok', chain,
+      protocol: d?.protocol || '', keyExchange: d?.keyExchange || '', group: d?.keyExchangeGroup || '',
+      cipher: d?.cipher || '', mac: d?.mac || '', ct: d?.certificateTransparencyCompliance || '',
+      ech: !!d?.encryptedClientHello,
+    };
+  } catch (e) {
+    return { status: 'error', error: e.message };
+  } finally {
+    chrome.debugger.detach(target).catch(() => {});
+  }
+}
+
+async function enableCertScan() {
+  // Doit rester dans le gestionnaire de clic : la demande exige un geste utilisateur.
+  const granted = await chrome.permissions.request({ permissions: ['debugger'] }).catch(() => false);
+  if (granted) {
+    state.active = 'cert';
+    await scan();
   }
 }
 
@@ -76,18 +144,21 @@ function headerMap(list) {
 
 async function gather(tab) {
   const url = tab.url;
-  const [net, dom, globals, cookies, securityTxt] = await Promise.all([
-    chrome.runtime.sendMessage({ type: 'net', tabId: tab.id }).catch(() => null),
+  const [net, dom, globals, cookies, securityTxt, tls] = await Promise.all([
+    withTimeout(chrome.runtime.sendMessage({ type: 'net', tabId: tab.id }).catch(() => null)),
     runInTab(tab.id, collectPage, 'ISOLATED'),
     runInTab(tab.id, collectGlobals, 'MAIN'),
     chrome.cookies.getAll({ url }).catch(() => []),
     fetchSecurityTxt(url),
+    scanTls(tab),
   ]);
 
   // La capture n'est valable que si elle concerne le document affiché (pas une page
   // restaurée depuis le cache, ni une navigation interrompue).
   const docUrl = stripHash(dom?.docUrl || url);
-  const captured = net?.main && stripHash(net.url) === docUrl ? net : null;
+  const sameDoc = net && stripHash(net.url) === docUrl;
+  const captured = sameDoc && net.main ? net : null;
+  const navError = sameDoc && !net.main ? net.error || null : null;
 
   let rawHeaders = captured ? captured.main.headers : null;
   let status = captured ? captured.main.status : null;
@@ -106,9 +177,11 @@ async function gather(tab) {
     status,
     ip: captured?.main.ip || null,
     net: captured,
+    navError,
     dom,
     globals,
     securityTxt,
+    tls,
     // Les valeurs des cookies ne sont jamais conservées.
     cookies: cookies.map((c) => ({
       name: c.name, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly,
@@ -192,6 +265,7 @@ function exportJson() {
     url: raw.url, score: report.score, grade: report.grade, counts: report.counts,
     findings: report.findings, tech: report.tech, hosts: report.hosts,
     status: raw.status, ip: raw.ip, headerSource: raw.headerSource, headers: raw.rawHeaders, cookies: raw.cookies,
+    tls: raw.tls,
   };
   const href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
   const a = el('a', { href, download: `goa-scan-${new URL(raw.url).hostname}-${raw.scannedAt.slice(0, 10)}.json` });
@@ -248,7 +322,7 @@ function renderTabs() {
 function renderPanel() {
   const panel = $('panel');
   const def = TABS.find((t) => t.id === state.active);
-  const extras = { headers: headersExtra, cookies: cookiesExtra, content: contentExtra, network: networkExtra };
+  const extras = { cert: certExtra, headers: headersExtra, cookies: cookiesExtra, content: contentExtra, network: networkExtra };
   panel.replaceChildren(...(def.id === 'summary' ? summaryPanel() : categoryPanel(def, extras[def.id])));
   panel.scrollTop = 0;
 }
@@ -318,7 +392,7 @@ function summaryPanel() {
 
   out.push(el('h2', { text: 'Aller plus loin' }),
     el('div', { class: 'tools' }, toolLinks().map(([label, href]) => el('a', { href, target: '_blank', rel: 'noopener noreferrer', text: label }))),
-    el('p', { class: 'hint', text: 'Ces services externes reçoivent le domaine analysé. Une extension ne peut pas lire le certificat TLS : SSL Labs le détaille.' }));
+    el('p', { class: 'hint', text: 'Ces services externes reçoivent le domaine analysé. SSL Labs teste en plus toutes les suites acceptées par le serveur, ce qu’un navigateur ne voit pas.' }));
   return out;
 }
 
@@ -345,6 +419,63 @@ function categoryPanel(def, extra) {
   if (issues.length) out.push(list(issues));
   if (ok.length) out.push(issues.length ? okGroup(ok) : list(ok));
   return out.concat(extra());
+}
+
+function certExtra() {
+  const { raw } = state;
+  const tls = raw.tls;
+  if (!tls) return [el('div', { class: 'note', text: 'Page servie en HTTP : il n’y a aucun certificat à analyser.' })];
+  if (tls.status === 'no-permission') {
+    return [el('div', { class: 'note' },
+      'Chrome ne donne accès au certificat qu’à travers son protocole de débogage. Goa Scan s’y attache une fraction de seconde, en local, puis se détache : Chrome affiche alors brièvement un bandeau « a commencé le débogage ».',
+      el('br'),
+      el('button', { type: 'button', onclick: enableCertScan, text: 'Activer l’analyse des certificats' }))];
+  }
+  if (tls.status !== 'ok') return [];
+  if (!tls.chain.length && !tls.protocol) return [];
+
+  const day = (t) => new Date(t).toISOString().slice(0, 10);
+  const leaf = tls.chain[0];
+  const out = [
+    el('h2', { text: 'Connexion' }),
+    facts([
+      ['Protocole', tls.protocol || '—'],
+      ['Échange de clés', tls.group || tls.keyExchange || '—'],
+      ['Chiffrement', [tls.cipher, tls.mac].filter(Boolean).join(' / ') || '—'],
+      ['Transparence', { compliant: 'conforme', 'not-compliant': 'non conforme', unknown: 'inconnue' }[tls.ct] || '—'],
+      ['Validation', leaf?.validation || '—'],
+      ['Émetteur', leaf ? (leaf.issuer.o || leaf.issuer.cn) : '—'],
+    ]),
+  ];
+  if (!tls.chain.length) return out;
+
+  out.push(el('h2', { text: `Chaîne de certification (${tls.chain.length})` }));
+  tls.chain.forEach((c, i) => {
+    const role = i === 0 ? 'Certificat du site' : c.selfSigned ? 'Racine' : 'Intermédiaire';
+    const key = c.key.type === 'EC' ? `EC ${c.key.curve}` : `${c.key.type} ${c.key.bits} bits`;
+    const rows = [
+      ['Sujet', c.subject.dn || '—'],
+      ['Émetteur', c.issuer.dn || '—'],
+      ['Validité', `${day(c.notBefore)} → ${day(c.notAfter)}`],
+      ['Clé', key],
+      ['Signature', c.sigAlg],
+      ['Série', c.serial],
+      ['SHA-256', c.sha256],
+    ];
+    if (c.isCA) rows.push(['Autorité', 'oui (CA)']);
+    if (i === 0) rows.push(['Transparence', c.sct ? 'SCT intégrés' : 'aucun SCT intégré']);
+    const card = el('div', { class: 'certcard' },
+      el('div', { class: 'role', text: role }),
+      el('h3', { text: c.subject.cn || c.subject.o || c.subject.dn }),
+      el('dl', { class: 'kv' }, rows.map(([k, v]) => [el('dt', { text: k }), el('dd', { text: v })])));
+    if (c.san.length) {
+      card.append(el('details', { class: 'san' },
+        el('summary', { text: `${c.san.length} nom${c.san.length > 1 ? 's' : ''} couvert${c.san.length > 1 ? 's' : ''} (SAN)` }),
+        el('ul', { class: 'items' }, c.san.slice(0, 200).map((n) => el('li', { text: n })))));
+    }
+    out.push(card);
+  });
+  return out;
 }
 
 function headersExtra() {

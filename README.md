@@ -13,6 +13,7 @@ une requête de secours pour les en-têtes si besoin). Les liens « Aller plus l
 
 | Onglet | Contrôles |
 |---|---|
+| **Certificat** | chaîne complète décodée (sujet, émetteur, validité, clé, signature, n° de série, empreinte SHA-256, SAN, niveau DV/OV/EV, SCT), expiration (expiré, < 14 j, < 30 j), nom de domaine couvert (jokers compris), auto-signé, signature SHA-1/MD5, clé RSA < 2048 / EC < 256, durée > 398 jours, intermédiaire expiré, wildcard ; connexion : protocole (TLS 1.0/1.1 obsolètes), échange de clés, chiffrement (RSA statique, CBC), conformité Certificate Transparency ; certificat refusé par Chrome (`ERR_CERT_*`) |
 | **Transport** | HTTPS, redirection HTTP → HTTPS, HSTS (durée, includeSubDomains, preload), contenu mixte actif/passif (DOM + requêtes), WebSocket en clair |
 | **En-têtes** | CSP (absente, Report-Only, `unsafe-inline`, `unsafe-eval`, jokers, `object-src`, `base-uri`, politiques multiples), anti-clickjacking (`frame-ancestors` / X-Frame-Options), `nosniff`, Referrer-Policy, Permissions-Policy, COOP, CORS `*`, X-XSS-Protection obsolète — plus la liste brute des en-têtes et des redirections |
 | **Exposition** | version du serveur, `X-Powered-By` & co, `meta generator`, bibliothèques JS vulnérables (jQuery, jQuery UI, AngularJS, Bootstrap, Lodash, Moment), `security.txt` |
@@ -45,10 +46,31 @@ télécharge le rapport (constats, en-têtes, cookies sans valeurs, domaines).
 | `scripting` | inspecter le DOM de l'onglet au moment de l'analyse |
 | `cookies` | lire les attributs des cookies (Secure, HttpOnly, SameSite) |
 | `storage` | garder la capture réseau par onglet (`storage.session`, vidé à la fermeture du navigateur) |
+| `debugger` *(optionnelle)* | lire le certificat — demandée au premier clic sur *Activer l'analyse des certificats* |
+
+### Pourquoi `debugger` pour le certificat
+
+Chrome n'expose pas le certificat aux extensions (pas d'équivalent au
+`getSecurityInfo` de Firefox), et le domaine `Security` du protocole DevTools leur
+est fermé. Goa Scan passe donc par le domaine `Network`, qui leur est ouvert :
+
+1. `chrome.debugger.attach` sur l'onglet, le temps de l'analyse (~0,5 s) ;
+2. `Network.getCertificate` → la chaîne en DER, décodée localement par `cert.js`
+   (décodeur ASN.1 minimal, sans dépendance) ;
+3. une requête sonde `HEAD` vers la même origine, sans cookies, dont on lit
+   `securityDetails` (protocole, échange de clés, chiffrement, conformité CT) ;
+4. détachement.
+
+Pendant l'attachement, Chrome affiche un bandeau « Goa Scan a commencé le débogage
+de ce navigateur » qui disparaît aussitôt. La permission est optionnelle : sans
+elle, tout le reste de l'analyse fonctionne.
 
 ## Limites
 
-- **Certificat TLS** : Chrome ne l'expose pas aux extensions. Le lien SSL Labs le détaille.
+- **Certificat refusé** (expiré, auto-signé…) : Chrome affiche sa page d'erreur, à laquelle
+  rien ne peut s'attacher ; seul le code `ERR_CERT_*` est connu, la note tombe à F.
+- **Paramètres TLS** : si la CSP de la page bloque la requête sonde (`connect-src`),
+  seule la chaîne est affichée.
 - **Page chargée avant l'extension** (ou restaurée du cache) : les requêtes n'ont pas
   été vues et les en-têtes viennent d'une requête de secours sans cookies. Le bouton
   *Recharger la page* corrige les deux.
@@ -65,13 +87,17 @@ Vanilla JS, aucune dépendance, aucun build.
 manifest.json   déclaration MV3
 background.js   service worker : capture en-têtes + requêtes par onglet
 collector.js    fonctions injectées dans la page (DOM, variables globales)
+cert.js         décodeur X.509 (DER) : sujet, émetteur, clé, SAN, politiques, SCT
 checks.js       règles d'analyse, fonctions pures (testables sous Node)
 popup.*         interface — popup et rapport complet (popup.html?tab=<id>)
 ```
 
 ```bash
-node --test tests/*.test.js        # règles d'analyse + signature des polices
+node --test tests/*.test.js        # règles, décodeur X.509, signature des polices
 ```
+
+Les certificats de test (`tests/fixtures/*.b64`) sont générés par openssl (RSA 2048,
+EC P-256 wildcard, RSA 1024 SHA-1) plus la chaîne réelle de github.com.
 
 Test de bout en bout dans un vrai Chromium (page piège locale + sites réels, captures
 dans `/tmp/goa-scan-shots/`) :
@@ -79,4 +105,5 @@ dans `/tmp/goa-scan-shots/`) :
 ```bash
 python3 tests/e2e/fixture.py &
 npm i --no-save puppeteer-core && node tests/e2e/e2e.mjs
+node tests/e2e/e2e-cert.mjs   # copie avec « debugger » obligatoire : github.com + badssl.com
 ```

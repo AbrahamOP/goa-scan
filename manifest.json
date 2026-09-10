@@ -5,6 +5,7 @@
   "description": "Analyse la sécurité de la page active : HTTPS, en-têtes, cookies, contenu, requêtes, technologies. 100 % local.",
   "minimum_chrome_version": "116",
   "permissions": ["scripting", "cookies", "webRequest", "storage"],
+  "optional_permissions": ["debugger"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
