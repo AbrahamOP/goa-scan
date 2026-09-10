@@ -71,12 +71,12 @@ try {
 
   await r.evaluate(() => { state.active = 'api'; renderTabs(); renderPanel(); document.body.classList.remove('full'); });
   await r.screenshot({ path: `${OUT}api-tab.png` });
-  await r.evaluate(() => { const h = [...document.querySelectorAll('#panel h2')].find((x) => /Endpoints cités/.test(x.textContent)); h?.scrollIntoView(); });
-  await r.screenshot({ path: `${OUT}api-tab-endpoints.png` });
-  await r.evaluate(() => { const h = [...document.querySelectorAll('#panel h2')].find((x) => /Paramètres cités/.test(x.textContent)); h?.scrollIntoView(); });
-  await r.screenshot({ path: `${OUT}api-tab-params.png` });
-  await r.evaluate(() => { const h = [...document.querySelectorAll('#panel h2')].find((x) => /JavaScript/.test(x.textContent)); h?.scrollIntoView(); });
-  await r.screenshot({ path: `${OUT}api-tab-secrets.png` });
+  await r.evaluate(() => { state.active = 'jscode'; renderTabs(); renderPanel(); });
+  const jsH2 = await r.evaluate(() => [...document.querySelectorAll('#panel h2')].map((x) => x.textContent));
+  check('onglet Code JS : secrets, endpoints, paramètres', ['Clés et secrets', 'Endpoints', 'Paramètres'].every((t) => jsH2.some((x) => x.startsWith(t))), jsH2);
+  await r.screenshot({ path: `${OUT}jscode-tab.png` });
+  await r.evaluate(() => { const h = [...document.querySelectorAll('#panel h2')].find((x) => /Endpoints/.test(x.textContent)); h?.scrollIntoView(); });
+  await r.screenshot({ path: `${OUT}jscode-tab-endpoints.png` });
 
   // Mode actif : la spécification OpenAPI doit être trouvée, pas les catch-all HTML.
   await r.evaluate(() => document.getElementById('tg-active').click());

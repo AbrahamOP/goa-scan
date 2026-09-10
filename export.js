@@ -12,6 +12,7 @@
     ['content', 'Contenu de la page'],
     ['active', 'Mode actif (fichiers & DNS)'],
     ['api', 'API'],
+    ['jscode', 'Code JavaScript'],
     ['network', 'Réseau'],
   ];
   const esc = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');

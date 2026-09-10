@@ -10,6 +10,11 @@ besoin, une requête de secours pour les en-têtes). Le mode actif (opt-in) ajou
 sondes vers ce même site et des requêtes DNS-over-HTTPS. Les liens « Aller plus loin »
 (SSL Labs, VirusTotal…) n'envoient le domaine qu'au clic.
 
+## Ce qui a été ajouté en 0.6.1
+
+- **Deux onglets séparés** : *API* (appels capturés + documentation OpenAPI) et *Code JS*
+  (secrets, endpoints, paramètres) — l'onglet unique devenait trop chargé.
+
 ## Ce qui a été ajouté en 0.6.0
 
 - **Paramètres cités dans le JavaScript** (onglet API) : noms de paramètres de requête ou de

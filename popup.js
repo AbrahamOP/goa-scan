@@ -12,6 +12,7 @@ const TABS = [
   { id: 'content', label: 'Contenu', cats: ['content'] },
   { id: 'active', label: 'Actif', cats: ['active'], optional: true },
   { id: 'api', label: 'API', cats: ['api'] },
+  { id: 'jscode', label: 'Code JS', cats: ['jscode'] },
   { id: 'network', label: 'Réseau', cats: ['network'] },
 ];
 const SAMESITE = { no_restriction: 'None', lax: 'Lax', strict: 'Strict', unspecified: 'Non défini' };
@@ -470,7 +471,7 @@ function renderTabs() {
 function renderPanel() {
   const panel = $('panel');
   const def = TABS.find((t) => t.id === state.active);
-  const extras = { cert: certExtra, headers: headersExtra, cookies: cookiesExtra, content: contentExtra, active: activeExtra, api: apiExtra, network: networkExtra };
+  const extras = { cert: certExtra, headers: headersExtra, cookies: cookiesExtra, content: contentExtra, active: activeExtra, api: apiExtra, jscode: jscodeExtra, network: networkExtra };
   panel.replaceChildren(...(def.id === 'summary' ? summaryPanel() : categoryPanel(def, extras[def.id])));
   panel.scrollTop = 0;
 }
@@ -667,14 +668,17 @@ function activeExtra() {
 }
 
 const shortType = (ct) => (ct ? ct.replace(/^(application|text)\//, '') : '—');
+const tag = (t) => el('span', { class: 'tag', text: ` · ${t}` });
+// Chemin seul pour les adresses de la page elle-même : la colonne reste lisible dans le popup.
+const shownUrl = (u) => {
+  const o = `${new URL(state.raw.url).origin}/`;
+  return u.startsWith(o) ? u.slice(o.length - 1) : u.replace(/^(https?|wss?):\/\//, '');
+};
 
 function apiExtra() {
   const { raw, report } = state;
   const out = [];
-  const tag = (t) => el('span', { class: 'tag', text: ` · ${t}` });
-  // Chemin seul pour les adresses de la page elle-même : la colonne reste lisible dans le popup.
-  const pageOrigin = new URL(raw.url).origin;
-  const shown = (u) => (u.startsWith(`${pageOrigin}/`) ? u.slice(pageOrigin.length) : u.replace(/^(https?|wss?):\/\//, ''));
+  const shown = shownUrl;
   if (!raw.net) {
     out.push(captureNote());
   } else {
@@ -704,31 +708,46 @@ function apiExtra() {
     out.push(el('p', { class: 'hint', text: 'Les identifiants dans les chemins deviennent :id, :uuid, :hash ou :token pour regrouper les appels. Seuls les noms des paramètres et le type d’authentification sont gardés, jamais leurs valeurs. Les appels faits après l’analyse apparaissent en cliquant sur Relancer.' }));
   }
 
-  const js = raw.jsSecrets;
-  if (js) {
-    const s = js.scanned;
-    out.push(el('h2', { text: 'Clés et secrets dans le JavaScript' }), facts([
-      ['Scripts lus', s.inline + s.external],
-      ['Volume', `${(s.bytes / 1e6).toFixed(1)} Mo`],
-      ['Trouvés', js.hits.length],
-    ]));
-    if (js.hits.length) {
-      out.push(table(['Type', 'Valeur masquée', 'Source'], js.hits.map((h) => [
-        el('span', {}, h.name, h.public ? el('span', { class: 'tag', text: ' · publique' }) : null),
-        el('span', { class: 'nowrap', text: h.value }),
-        `${h.source}${h.line > 1 ? `:${h.line}` : ''}${h.third ? ' (tiers)' : ''}`,
-      ])));
-    }
-    out.push(el('p', { class: 'hint', text: `Recherche par formats connus (AWS, Stripe, GitHub, GitLab, OpenAI, Anthropic, Slack, Discord, Telegram, SendGrid, clés privées, JWT Supabase…) dans ${s.inline} script(s) inline et ${s.external} script(s) externe(s) relus sans cookies${s.trackers ? `, ${s.trackers} script(s) de traqueurs ignoré(s)` : ''}${s.skipped ? `, ${s.skipped} au-delà de la limite de ${JS_MAX_SCRIPTS}` : ''}. Les valeurs sont masquées et ne quittent pas le navigateur.` }));
+  const doc = raw.probes?.apiDoc;
+  if (doc) {
+    out.push(el('h2', { text: `Documentation ${doc.kind} ${doc.version}${doc.title ? ` — ${doc.title}` : ''}` }),
+      el('p', { class: 'hint', text: `Trouvée sur ${doc.path} : ${doc.total} route(s)${doc.total > doc.routes.length ? `, ${doc.routes.length} affichées` : ''}.` }),
+      table(['Méthode', 'Route', 'Description'], doc.routes.map((r) => [r.method, r.path, r.summary || '—'])));
+  } else if (!state.settings.activeMode) {
+    out.push(el('p', { class: 'hint', text: 'Le mode actif cherche aussi une documentation OpenAPI ou Swagger publique (openapi.json, swagger.json, /v3/api-docs…) et en liste les routes.' }));
   }
+  return out;
+}
+
+// Ce que le code JavaScript livré au navigateur révèle : secrets, endpoints, paramètres.
+function jscodeExtra() {
+  const { raw, report } = state;
+  const out = [];
+  if (!raw.jsSecrets) return [captureNote() || el('p', { class: 'status', text: 'Aucun script inspectable sur cette page.' })];
+
+  const js = raw.jsSecrets;
+  const s = js.scanned;
+  out.push(el('h2', { text: 'Clés et secrets' }), facts([
+    ['Scripts lus', s.inline + s.external],
+    ['Volume', `${(s.bytes / 1e6).toFixed(1)} Mo`],
+    ['Trouvés', js.hits.length],
+  ]));
+  if (js.hits.length) {
+    out.push(table(['Type', 'Valeur masquée', 'Source'], js.hits.map((h) => [
+      el('span', {}, h.name, h.public ? tag('publique') : null),
+      el('span', { class: 'nowrap', text: h.value }),
+      `${h.source}${h.line > 1 ? `:${h.line}` : ''}${h.third ? ' (tiers)' : ''}`,
+    ])));
+  }
+  out.push(el('p', { class: 'hint', text: `Recherche par formats connus (AWS, Stripe, GitHub, GitLab, OpenAI, Anthropic, Slack, Discord, Telegram, SendGrid, clés privées, JWT Supabase…) dans ${s.inline} script(s) inline et ${s.external} script(s) externe(s) relus sans cookies${s.trackers ? `, ${s.trackers} script(s) de traqueurs ignoré(s)` : ''}${s.skipped ? `, ${s.skipped} au-delà de la limite de ${JS_MAX_SCRIPTS}` : ''}. Les valeurs sont masquées et ne quittent pas le navigateur.` }));
 
   const eps = report.jsEndpoints;
   if (raw.jsEndpoints) {
     const called = eps.filter((e) => e.called).length;
-    out.push(el('h2', { text: `Endpoints cités dans le JavaScript (${eps.length})` }));
+    out.push(el('h2', { text: `Endpoints (${eps.length})` }));
     if (eps.length) {
       out.push(table(['Endpoint', 'Vu', 'Source'], eps.slice(0, 200).map((e) => [
-        el('span', { title: e.url }, shown(e.url), e.sensitive ? tag('sensible') : null, e.third ? tag('autre domaine') : null,
+        el('span', { title: e.url }, shownUrl(e.url), e.sensitive ? tag('sensible') : null, e.third ? tag('autre domaine') : null,
           e.params.length ? el('div', { class: 'params', text: `?${e.params.join('&')}` }) : null),
         el('span', { class: 'nowrap', text: e.called ? 'appelé' : '—' }),
         `${e.source}${e.line > 1 ? `:${e.line}` : ''}`,
@@ -739,21 +758,12 @@ function apiExtra() {
 
   const prm = raw.jsParams;
   if (prm) {
-    out.push(el('h2', { text: `Paramètres cités dans le JavaScript (${prm.length})` }));
+    out.push(el('h2', { text: `Paramètres (${prm.length})` }));
     if (prm.length) {
       out.push(el('div', { class: 'chips' }, prm.slice(0, 200).map((p) =>
         el('span', { class: 'chip' }, p.name, p.count > 1 ? el('span', { class: 'ver', text: `×${p.count}` }) : null))));
     }
-    out.push(el('p', { class: 'hint', text: 'Noms de paramètres de requête ou de formulaire trouvés dans le code (query strings, searchParams, FormData, objets params/data). Surface d’entrée à tester ; contient aussi des clés d’objets internes.' }));
-  }
-
-  const doc = raw.probes?.apiDoc;
-  if (doc) {
-    out.push(el('h2', { text: `Documentation ${doc.kind} ${doc.version}${doc.title ? ` — ${doc.title}` : ''}` }),
-      el('p', { class: 'hint', text: `Trouvée sur ${doc.path} : ${doc.total} route(s)${doc.total > doc.routes.length ? `, ${doc.routes.length} affichées` : ''}.` }),
-      table(['Méthode', 'Route', 'Description'], doc.routes.map((r) => [r.method, r.path, r.summary || '—'])));
-  } else if (!state.settings.activeMode) {
-    out.push(el('p', { class: 'hint', text: 'Le mode actif cherche aussi une documentation OpenAPI ou Swagger publique (openapi.json, swagger.json, /v3/api-docs…) et en liste les routes.' }));
+    out.push(el('p', { class: 'hint', text: 'Noms de paramètres de requête ou de formulaire trouvés dans le code (query strings, searchParams, FormData, objets params/query). Surface d’entrée à tester ; contient aussi des clés d’objets internes.' }));
   }
   return out;
 }
