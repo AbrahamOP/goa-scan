@@ -265,6 +265,20 @@
             detail: 'La même clé couvre tous les sous-domaines : compromise sur un seul serveur, elle les expose tous.',
           });
         }
+        const pin = input.certPin;
+        if (pin?.changed && !pin.benign) {
+          add({
+            cat: 'certificate', id: 'cert-pin', sev: 'high', title: 'Le certificat a changé depuis la dernière visite',
+            detail: 'Nouvelle empreinte, émetteur ou clé différents d’un simple renouvellement. Sur un réseau non maîtrisé (Wi-Fi public, proxy d’entreprise), cela peut trahir une interception ; sinon, c’est un changement d’autorité à confirmer.',
+            fix: 'Vérifier que ce changement est attendu ; dans le doute, ne rien saisir de sensible et recharger depuis un autre réseau.',
+            items: pin.previous ? [`Ancien émetteur : ${pin.previous.issuer || '—'}`, `Vu le ${new Date(pin.previous.seenAt).toISOString().slice(0, 10)}`] : undefined,
+          });
+        } else if (pin?.changed && pin.benign) {
+          add({ cat: 'certificate', id: 'cert-pin', title: 'Certificat renouvelé depuis la dernière visite', detail: 'Même autorité, expiration repoussée : renouvellement normal.' });
+        } else if (pin && !pin.changed && tls.chain.length) {
+          add({ cat: 'certificate', id: 'cert-pin', ok: true, title: 'Certificat identique à la dernière visite' });
+        }
+
         const staleCa = tls.chain.slice(1).filter((c) => now > c.notAfter);
         if (staleCa.length) {
           add({
@@ -484,22 +498,17 @@
       });
     }
 
-    const libs = [
-      { key: 'jquery', name: 'jQuery', bad: (v) => cmpVer(v, '3.5.0') < 0, sev: 'medium', why: 'XSS via la manipulation HTML (CVE-2020-11022, CVE-2020-11023).', fixV: '3.5.0' },
-      { key: 'jqueryUI', name: 'jQuery UI', bad: (v) => cmpVer(v, '1.13.0') < 0, sev: 'low', why: 'XSS dans plusieurs options (CVE-2021-41182 à 41184).', fixV: '1.13.0' },
-      { key: 'angularjs', name: 'AngularJS', bad: () => true, sev: 'medium', why: 'Branche en fin de vie depuis janvier 2022 : les failles découvertes depuis ne sont plus corrigées.', fixV: 'Angular moderne' },
-      { key: 'bootstrap', name: 'Bootstrap', bad: (v) => (cmpVer(v, '4.0.0') < 0 ? cmpVer(v, '3.4.1') < 0 : cmpVer(v, '4.3.1') < 0), sev: 'low', why: 'XSS via data-template et data-content (CVE-2019-8331).', fixV: '3.4.1 / 4.3.1' },
-      { key: 'lodash', name: 'Lodash', bad: (v) => cmpVer(v, '4.17.21') < 0, sev: 'low', why: 'Pollution de prototype et injection via template (CVE-2020-8203, CVE-2021-23337).', fixV: '4.17.21' },
-      { key: 'moment', name: 'Moment.js', bad: (v) => cmpVer(v, '2.29.4') < 0, sev: 'low', why: 'Déni de service par expression régulière (CVE-2022-31129).', fixV: '2.29.4' },
-    ];
-    for (const lib of libs) {
-      const v = g[lib.key];
-      if (v && lib.bad(v)) {
-        add({
-          cat: 'exposure', id: `lib-${lib.key}`, sev: lib.sev, title: `${lib.name} ${v} vulnérable`,
-          detail: lib.why, fix: `Mettre à jour vers ${lib.fixV} ou plus récent.`,
-        });
-      }
+    // Bibliothèques vulnérables : résultats de la base retire.js, calculés par l'appelant.
+    for (const lib of input.vulns || []) {
+      const cves = lib.cves.slice(0, 6);
+      const more = lib.count - 1;
+      add({
+        cat: 'exposure', id: `lib-${lib.component}`, sev: lib.sev,
+        title: `${lib.component} ${lib.version} — ${lib.count} vulnérabilité${lib.count > 1 ? 's' : ''} connue${lib.count > 1 ? 's' : ''}`,
+        detail: (lib.summaries[0] || 'Version affectée par des vulnérabilités publiées.') + (more > 0 ? ` (+${more} autre${more > 1 ? 's' : ''})` : '') + ` — détecté via ${lib.source}.`,
+        fix: 'Mettre à jour vers la dernière version corrigée.',
+        items: cves.length ? cves : undefined,
+      });
     }
 
     if (input.securityTxt === true) add({ cat: 'exposure', id: 'security-txt', ok: true, title: 'security.txt publié' });
@@ -630,6 +639,31 @@
           cat: 'content', id: 'inline', title: `${dom.inlineScripts} scripts inline, ${dom.inlineHandlers} gestionnaires on*`,
           detail: 'À garder en tête pour une CSP stricte : chaque bloc inline devra recevoir un nonce ou un hash.',
         });
+      }
+    }
+
+    // ── Mode actif (sondes opt-in) ────────────────────────────
+    if (input.probes) {
+      const { files = [], dns } = input.probes;
+      for (const f of files) {
+        if (f.sev === 'ok') { add({ cat: 'active', id: `file-${f.path}`, ok: true, title: f.title }); continue; }
+        if (f.sev === 'info') continue;
+        add({
+          cat: 'active', id: `file-${f.path}`, sev: f.sev, title: f.title,
+          detail: `Accessible publiquement sur ${f.path} (HTTP ${f.status}). Un fichier de ce type expose du code source, des identifiants ou la structure interne du site.`,
+          fix: `Bloquer l’accès à ${f.path} au niveau du serveur ou retirer le fichier de la racine web.`,
+          items: [`${f.path} → ${f.evidence}`],
+        });
+      }
+      if (dns) {
+        if (dns.dmarc) add({ cat: 'active', id: 'dns-dmarc', ok: true, title: 'DMARC publié' });
+        else add({ cat: 'active', id: 'dns-dmarc', sev: 'low', title: 'Pas d’enregistrement DMARC', detail: `Aucun _dmarc.${dns.domain} : le domaine est plus facilement usurpable pour du phishing.`, fix: 'Publier un TXT sur _dmarc, au moins v=DMARC1; p=none; puis durcir vers quarantine/reject.' });
+        if (dns.spf) add({ cat: 'active', id: 'dns-spf', ok: true, title: 'SPF publié' });
+        else add({ cat: 'active', id: 'dns-spf', sev: 'low', title: 'Pas d’enregistrement SPF', detail: 'Aucun TXT v=spf1 : rien ne dit quels serveurs peuvent envoyer du courrier pour ce domaine.', fix: 'Publier un TXT v=spf1 … -all.' });
+        if (dns.caa) add({ cat: 'active', id: 'dns-caa', ok: true, title: 'CAA publié' });
+        else add({ cat: 'active', id: 'dns-caa', sev: 'low', title: 'Pas d’enregistrement CAA', detail: 'Sans CAA, n’importe quelle autorité peut émettre un certificat pour ce domaine.', fix: 'Publier un CAA limitant l’émission aux autorités utilisées (ex. letsencrypt.org).' });
+        if (dns.dnssec) add({ cat: 'active', id: 'dns-dnssec', ok: true, title: 'DNSSEC actif' });
+        else add({ cat: 'active', id: 'dns-dnssec', sev: 'low', title: 'DNSSEC inactif', detail: 'Les réponses DNS ne sont pas signées : elles peuvent être falsifiées (empoisonnement de cache).', fix: 'Activer DNSSEC chez l’hébergeur DNS et publier l’enregistrement DS chez le registrar.' });
       }
     }
 

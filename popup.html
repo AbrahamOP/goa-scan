@@ -14,6 +14,10 @@
       <span class="wordmark">Goa Scan</span>
     </div>
     <div class="target" id="target"></div>
+    <div class="toggles" id="toggles" hidden>
+      <label><input type="checkbox" id="tg-auto"> <span>Analyse auto <span class="mut">· note sur l’icône</span></span></label>
+      <label><input type="checkbox" id="tg-active"> <span>Mode actif <span class="mut">· sonde fichiers &amp; DNS</span></span></label>
+    </div>
   </header>
 
   <section class="scorecard" id="scorecard" hidden>
@@ -32,14 +36,25 @@
 
   <footer class="actions" id="actions">
     <button type="button" id="rescan">Relancer</button>
-    <button type="button" id="reload" title="Recharge la page pour capturer ses en-têtes et ses requêtes">Recharger la page</button>
+    <button type="button" id="reload" title="Recharge la page pour capturer ses en-têtes et ses requêtes">Recharger</button>
     <button type="button" id="full">Rapport complet</button>
-    <button type="button" id="export">Exporter JSON</button>
+    <div class="menu" id="exportMenu">
+      <button type="button" id="export" aria-haspopup="true" aria-expanded="false">Exporter ▾</button>
+      <div class="menu-list" id="exportList" hidden>
+        <button type="button" data-fmt="md">Markdown (.md)</button>
+        <button type="button" data-fmt="pdf">PDF imprimable</button>
+        <button type="button" data-fmt="json">JSON</button>
+      </div>
+    </div>
   </footer>
 
   <script src="checks.js"></script>
   <script src="cert.js"></script>
+  <script src="vendor/vulndb-data.js"></script>
+  <script src="vulndb.js"></script>
   <script src="collector.js"></script>
+  <script src="probes.js"></script>
+  <script src="export.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

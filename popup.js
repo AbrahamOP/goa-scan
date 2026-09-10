@@ -1,5 +1,5 @@
 'use strict';
-/* global GoaChecks, GoaCert, collectPage, collectGlobals */
+/* global GoaChecks, GoaCert, GoaVulnDB, GoaProbes, GoaExport, GOA_RETIRE_DB, collectPage, collectGlobals */
 // Goa Scan — popup et rapport complet (même page, ouverte avec ?tab=<id>).
 // Tout ce qui vient de la page analysée est inséré en textContent, jamais en HTML.
 
@@ -10,13 +10,14 @@ const TABS = [
   { id: 'headers', label: 'En-têtes', cats: ['transport', 'headers', 'exposure'] },
   { id: 'cookies', label: 'Cookies', cats: ['cookies'] },
   { id: 'content', label: 'Contenu', cats: ['content'] },
+  { id: 'active', label: 'Actif', cats: ['active'], optional: true },
   { id: 'network', label: 'Réseau', cats: ['network'] },
 ];
 const SAMESITE = { no_restriction: 'None', lax: 'Lax', strict: 'Strict', unspecified: 'Non défini' };
 
 const params = new URLSearchParams(location.search);
 const fullPage = params.has('tab');
-const state = { tab: null, raw: null, report: null, active: 'summary', busy: false };
+const state = { tab: null, raw: null, report: null, active: 'summary', busy: false, settings: { autoScan: true, activeMode: false } };
 const $ = (id) => document.getElementById(id);
 
 function el(tag, props, ...kids) {
@@ -168,7 +169,25 @@ async function gather(tab) {
     if (r) ({ headers: rawHeaders, status } = r, headerSource = 'refetch');
   }
 
+  const vulns = GoaVulnDB.scan({ db: GOA_RETIRE_DB, scripts: (dom?.scripts || []).map((s) => s.src), globals: globals || {} });
+
+  // Épingle du certificat : comparaison à la dernière visite via le service worker.
+  let certPin = null;
+  const leaf = tls?.status === 'ok' && tls.chain[0];
+  if (leaf) {
+    certPin = await chrome.runtime.sendMessage({
+      type: 'pin',
+      observation: { host: new URL(url).hostname, sha256: leaf.sha256, notAfter: leaf.notAfter, issuer: leaf.issuer.dn },
+    }).catch(() => null);
+  }
+
+  // Mode actif (opt-in) : sondes de fichiers exposés + DNS. Jamais sans le réglage.
+  const probes = state.settings?.activeMode ? await GoaProbes.run(url).catch(() => null) : null;
+
   return {
+    vulns,
+    certPin,
+    probes,
     url,
     scannedAt: new Date().toISOString(),
     headers: rawHeaders ? headerMap(rawHeaders) : null,
@@ -258,21 +277,35 @@ function openFull() {
   chrome.tabs.create({ url: chrome.runtime.getURL(`popup.html?tab=${state.tab.id}`) });
 }
 
-function exportJson() {
-  const { raw, report } = state;
-  const data = {
-    tool: 'Goa Scan', version: chrome.runtime.getManifest().version, scannedAt: raw.scannedAt,
-    url: raw.url, score: report.score, grade: report.grade, counts: report.counts,
-    findings: report.findings, tech: report.tech, hosts: report.hosts,
-    status: raw.status, ip: raw.ip, headerSource: raw.headerSource, headers: raw.rawHeaders, cookies: raw.cookies,
-    tls: raw.tls,
-  };
-  const href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-  const a = el('a', { href, download: `goa-scan-${new URL(raw.url).hostname}-${raw.scannedAt.slice(0, 10)}.json` });
+function download(text, mime, ext) {
+  const { raw } = state;
+  const href = URL.createObjectURL(new Blob([text], { type: mime }));
+  const a = el('a', { href, download: `goa-scan-${new URL(raw.url).hostname}-${raw.scannedAt.slice(0, 10)}.${ext}` });
   document.body.append(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(href), 5000);
+}
+
+function exportReport(fmt) {
+  const { raw, report } = state;
+  raw.version = chrome.runtime.getManifest().version;
+  if (fmt === 'md') return download(GoaExport.buildMarkdown({ raw, report }), 'text/markdown', 'md');
+  if (fmt === 'pdf') {
+    // Page imprimable dans un onglet : elle appelle print(), l'utilisateur enregistre en PDF.
+    const href = URL.createObjectURL(new Blob([GoaExport.buildPrintableHtml({ raw, report })], { type: 'text/html' }));
+    window.open(href, '_blank');
+    setTimeout(() => URL.revokeObjectURL(href), 30000);
+    return;
+  }
+  const data = {
+    tool: 'Goa Scan', version: raw.version, scannedAt: raw.scannedAt,
+    url: raw.url, score: report.score, grade: report.grade, counts: report.counts,
+    findings: report.findings, tech: report.tech, hosts: report.hosts,
+    status: raw.status, ip: raw.ip, headerSource: raw.headerSource, headers: raw.rawHeaders,
+    cookies: raw.cookies, tls: raw.tls, probes: raw.probes,
+  };
+  download(JSON.stringify(data, null, 2), 'application/json', 'json');
 }
 
 // ── Rendu ───────────────────────────────────────────────────
@@ -310,7 +343,8 @@ function render() {
 function renderTabs() {
   const nav = $('tabs');
   nav.hidden = false;
-  nav.replaceChildren(...TABS.map((t) => {
+  const visible = TABS.filter((t) => !t.optional || state.report.findings.some((f) => t.cats.includes(f.cat)) || state.settings.activeMode);
+  nav.replaceChildren(...visible.map((t) => {
     const n = t.cats ? state.report.findings.filter((f) => !f.ok && f.sev !== 'info' && t.cats.includes(f.cat)).length : 0;
     return el('button', {
       type: 'button', role: 'tab', 'aria-selected': String(state.active === t.id),
@@ -322,7 +356,7 @@ function renderTabs() {
 function renderPanel() {
   const panel = $('panel');
   const def = TABS.find((t) => t.id === state.active);
-  const extras = { cert: certExtra, headers: headersExtra, cookies: cookiesExtra, content: contentExtra, network: networkExtra };
+  const extras = { cert: certExtra, headers: headersExtra, cookies: cookiesExtra, content: contentExtra, active: activeExtra, network: networkExtra };
   panel.replaceChildren(...(def.id === 'summary' ? summaryPanel() : categoryPanel(def, extras[def.id])));
   panel.scrollTop = 0;
 }
@@ -478,6 +512,33 @@ function certExtra() {
   return out;
 }
 
+function activeExtra() {
+  const { raw } = state;
+  if (!state.settings.activeMode) {
+    return [el('div', { class: 'note' },
+      'Le mode actif envoie de vraies requêtes vers le site pour détecter des fichiers exposés (/.git, /.env, /server-status…) et lire sa configuration DNS (CAA, DNSSEC, SPF, DMARC). Ne l’active que sur des sites qui t’appartiennent ou que tu es autorisé à tester.',
+      el('br'),
+      el('button', { type: 'button', onclick: () => setSetting('activeMode', true), text: 'Activer le mode actif et relancer' }))];
+  }
+  if (!raw.probes) return [el('p', { class: 'status', text: 'Sondes en cours ou indisponibles pour cette page.' })];
+  const out = [];
+  const d = raw.probes.dns;
+  if (d) {
+    out.push(el('h2', { text: `DNS de ${d.domain}` }));
+    out.push(facts([
+      ['DNSSEC', d.dnssec ? 'actif' : 'inactif'],
+      ['CAA', d.caa ? 'présent' : 'absent'],
+      ['SPF', d.spf ? 'présent' : 'absent'],
+      ['DMARC', d.dmarc ? 'présent' : 'absent'],
+    ]));
+    if (d.spf) out.push(el('p', { class: 'hint', text: `SPF : ${d.spf}` }));
+    if (d.dmarc) out.push(el('p', { class: 'hint', text: `DMARC : ${d.dmarc}` }));
+  }
+  out.push(el('h2', { text: 'Fichiers testés' }),
+    el('p', { class: 'hint', text: `${raw.probes.files.length} fichier(s) accessible(s) sur ${9} chemins sondés. Les tests sans résultat ne sont pas listés.` }));
+  return out;
+}
+
 function headersExtra() {
   const { raw } = state;
   const source = {
@@ -565,13 +626,44 @@ function networkExtra() {
 
 // ── Démarrage ───────────────────────────────────────────────
 
+async function setSetting(key, value) {
+  state.settings = await chrome.runtime.sendMessage({ type: 'settings:set', patch: { [key]: value } }).catch(() => ({ ...state.settings, [key]: value }));
+  syncToggles();
+  await scan();
+}
+
+function syncToggles() {
+  $('tg-auto').checked = !!state.settings.autoScan;
+  $('tg-active').checked = !!state.settings.activeMode;
+  $('toggles').hidden = false;
+}
+
+function wireExportMenu() {
+  const list = $('exportList');
+  const btn = $('export');
+  const close = () => { list.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = list.hidden;
+    list.hidden = !open;
+    btn.setAttribute('aria-expanded', String(open));
+  });
+  list.addEventListener('click', (e) => { const f = e.target.dataset?.fmt; if (f) { exportReport(f); close(); } });
+  document.addEventListener('click', close);
+}
+
 async function main() {
   document.body.classList.toggle('full', fullPage);
   $('full').hidden = fullPage;
   $('rescan').addEventListener('click', scan);
   $('reload').addEventListener('click', reloadAndScan);
   $('full').addEventListener('click', openFull);
-  $('export').addEventListener('click', exportJson);
+  wireExportMenu();
+  $('tg-auto').addEventListener('change', (e) => setSetting('autoScan', e.target.checked));
+  $('tg-active').addEventListener('change', (e) => setSetting('activeMode', e.target.checked));
+
+  state.settings = await chrome.runtime.sendMessage({ type: 'settings:get' }).catch(() => state.settings) || state.settings;
+  syncToggles();
 
   try {
     state.tab = fullPage

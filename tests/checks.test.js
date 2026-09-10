@@ -85,11 +85,13 @@ test('jeton CSRF lisible en JS : pas signalé', () => {
   assert.equal(find(r, 'cookie-httponly'), undefined);
 });
 
-test('bibliothèques obsolètes', () => {
-  assert.ok(find(C.analyze(input({ globals: { jquery: '1.12.4' } })), 'lib-jquery'));
-  assert.equal(find(C.analyze(input({ globals: { jquery: '3.7.1' } })), 'lib-jquery'), undefined);
-  assert.ok(find(C.analyze(input({ globals: { bootstrap: '4.1.0' } })), 'lib-bootstrap'));
-  assert.equal(find(C.analyze(input({ globals: { bootstrap: '3.4.1' } })), 'lib-bootstrap'), undefined);
+test('bibliothèques vulnérables : constat par composant, CVE en items', () => {
+  const r = C.analyze(input({ vulns: [{ component: 'jquery', version: '1.12.4', sev: 'medium', cves: ['CVE-2020-11022'], summaries: ['XSS'], count: 3, source: 'globale' }] }));
+  const f = find(r, 'lib-jquery');
+  assert.equal(f.sev, 'medium');
+  assert.match(f.title, /jquery 1\.12\.4/);
+  assert.ok(f.items.includes('CVE-2020-11022'));
+  assert.equal(C.analyze(input({ vulns: [] })).findings.find((x) => x.id === 'lib-jquery'), undefined);
 });
 
 test('contenu mixte actif : DOM et réseau fusionnés', () => {

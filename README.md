@@ -4,10 +4,21 @@ Extension Chrome (Manifest V3) qui analyse la sécurité de la page web active e
 affiche tout ce qu'elle révèle, en un clic : note de A à F, constats classés par
 gravité, correctif pour chacun.
 
-**100 % local.** Aucune donnée ne quitte le navigateur. Les seules requêtes émises
-par l'extension vont vers le site analysé lui-même (`/.well-known/security.txt`, et
-une requête de secours pour les en-têtes si besoin). Les liens « Aller plus loin »
+**100 % local.** Aucune donnée ne quitte le navigateur. En analyse passive, les seules
+requêtes émises vont vers le site analysé lui-même (`/.well-known/security.txt` et, au
+besoin, une requête de secours pour les en-têtes). Le mode actif (opt-in) ajoute des
+sondes vers ce même site et des requêtes DNS-over-HTTPS. Les liens « Aller plus loin »
 (SSL Labs, VirusTotal…) n'envoient le domaine qu'au clic.
+
+## Ce qui a été ajouté en 0.2.0
+
+- **Note automatique sur l'icône** et alerte si le **certificat d'un site change**
+  entre deux visites (détection d'interception). Réglable, activé par défaut.
+- **Base de vulnérabilités retire.js embarquée** (~75 composants, ~485 CVE) : détection
+  par variable globale *et* par URL/nom de fichier de script, sans aucun appel externe.
+- **Mode actif** (opt-in) : sondes de fichiers exposés (`/.git`, `/.env`, `/server-status`…)
+  confirmées par le contenu, et audit DNS (CAA, DNSSEC, SPF, DMARC) via DoH.
+- **Export Markdown et PDF imprimable**, en plus du JSON.
 
 ## Ce qui est analysé
 
@@ -45,8 +56,10 @@ télécharge le rapport (constats, en-têtes, cookies sans valeurs, domaines).
 | `webRequest` + `<all_urls>` | lire les en-têtes de réponse du document et compter les requêtes de la page (lecture seule, rien n'est bloqué ni modifié) |
 | `scripting` | inspecter le DOM de l'onglet au moment de l'analyse |
 | `cookies` | lire les attributs des cookies (Secure, HttpOnly, SameSite) |
-| `storage` | garder la capture réseau par onglet (`storage.session`, vidé à la fermeture du navigateur) |
+| `storage` | capture réseau par onglet (`storage.session`) et empreintes de certificats épinglées (`storage.local`) |
 | `debugger` *(optionnelle)* | lire le certificat — demandée au premier clic sur *Activer l'analyse des certificats* |
+
+L'analyse automatique (badge) et le mode actif se règlent depuis les deux cases en haut du popup.
 
 ### Pourquoi `debugger` pour le certificat
 
@@ -84,12 +97,22 @@ elle, tout le reste de l'analyse fonctionne.
 Vanilla JS, aucune dépendance, aucun build.
 
 ```
-manifest.json   déclaration MV3
-background.js   service worker : capture en-têtes + requêtes par onglet
-collector.js    fonctions injectées dans la page (DOM, variables globales)
-cert.js         décodeur X.509 (DER) : sujet, émetteur, clé, SAN, politiques, SCT
-checks.js       règles d'analyse, fonctions pures (testables sous Node)
-popup.*         interface — popup et rapport complet (popup.html?tab=<id>)
+manifest.json        déclaration MV3
+background.js        service worker : capture réseau, analyse auto + badge, épinglage cert
+collector.js         fonctions injectées dans la page (DOM, variables globales)
+cert.js              décodeur X.509 (DER) : sujet, émetteur, clé, SAN, politiques, SCT
+vulndb.js            détection retire.js (version → CVE), fonctions pures
+vendor/vulndb-data.js base retire.js embarquée (générée par tools/build-vulndb.mjs)
+probes.js            mode actif : sondes de fichiers + DNS-over-HTTPS
+export.js            rapport Markdown + HTML imprimable, fonctions pures
+checks.js            règles d'analyse, fonctions pures (testables sous Node)
+popup.*              interface — popup et rapport complet (popup.html?tab=<id>)
+```
+
+Régénérer la base de vulnérabilités :
+
+```bash
+node tools/build-vulndb.mjs   # refetch retire.js → vendor/vulndb-data.js
 ```
 
 ```bash
