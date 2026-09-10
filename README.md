@@ -10,6 +10,21 @@ besoin, une requête de secours pour les en-têtes). Le mode actif (opt-in) ajou
 sondes vers ce même site et des requêtes DNS-over-HTTPS. Les liens « Aller plus loin »
 (SSL Labs, VirusTotal…) n'envoient le domaine qu'au clic.
 
+## Ce qui a été ajouté en 0.4.0
+
+- **Clés et secrets dans le JavaScript** (onglet API) : scripts inline et scripts externes,
+  y compris ceux chargés dynamiquement, relus sans cookies (80 scripts, 3 Mo chacun, 25 Mo
+  en tout, traqueurs ignorés). Une trentaine de formats reconnus par préfixe : AWS, Stripe,
+  GitHub, GitLab, OpenAI, Anthropic, Google OAuth, Slack, Discord, Telegram, SendGrid,
+  Twilio, Mailgun, Mailchimp, npm, Hugging Face, Shopify, DigitalOcean, Mapbox, clés
+  privées, identifiants dans une URL, JWT (`service_role` Supabase = critique).
+- Les clés **publiques** par conception (Google Maps/Firebase `AIza`, Stripe `pk_`,
+  Supabase `anon`) sont classées à part, en info. Les affectations suspectes
+  (`client_secret: "…"`) sont « à vérifier ». Dans les scripts tiers, seuls les formats de
+  secrets connus comptent.
+- Les valeurs sont **masquées** dès la détection (`AKIAQ…XKD`), jamais stockées en clair.
+  Aucun faux positif mesuré sur GitHub, Wikipédia, Stripe, Le Monde, leboncoin, Doctolib.
+
 ## Ce qui a été ajouté en 0.3.0
 
 - **Onglet API** : chaque appel fetch, XHR ou WebSocket de la page, regroupé par endpoint
@@ -43,7 +58,7 @@ sondes vers ce même site et des requêtes DNS-over-HTTPS. Les liens « Aller pl
 | **Exposition** | version du serveur, `X-Powered-By` & co, `meta generator`, bibliothèques JS vulnérables (jQuery, jQuery UI, AngularJS, Bootstrap, Lodash, Moment), `security.txt` |
 | **Cookies** | Secure, HttpOnly sur les cookies de session, SameSite — tableau complet, **sans jamais lire les valeurs** |
 | **Contenu** | mot de passe sur page HTTP, formulaire posté en clair ou vers un autre site, scripts tiers sans SRI, iframes tierces sans sandbox, jetons (JWT…) dans localStorage/sessionStorage (noms de clés seulement), commentaires HTML sensibles, e-mails exposés, scripts inline et gestionnaires `on*` |
-| **API** | appels fetch/XHR/WebSocket (méthode, endpoint regroupé en `:id`, statut, type de réponse, schéma d'auth), jetons ou clés dans l'URL, HTTP Basic, erreurs 5xx ; en mode actif, documentation OpenAPI/Swagger publique et ses routes |
+| **API** | appels fetch/XHR/WebSocket (méthode, endpoint regroupé en `:id`, statut, type de réponse, schéma d'auth), jetons ou clés dans l'URL, HTTP Basic, erreurs 5xx ; clés et secrets dans le code JavaScript (valeurs masquées) ; en mode actif, documentation OpenAPI/Swagger publique et ses routes |
 | **Réseau** | requêtes émises par la page, domaines contactés, tiers, traqueurs connus, IP du serveur |
 
 Technologies détectées : serveur, CDN (Cloudflare, CloudFront, Fastly, Vercel,

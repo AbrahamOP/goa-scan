@@ -152,6 +152,7 @@ body.full .facts { grid-template-columns: repeat(6, 1fr); }
 .tbl .tag { color: var(--violet-l); }
 .tbl .params { color: var(--muted); font-size: 10.5px; }
 .tbl.api td:not(:nth-child(2)) { white-space: nowrap; overflow-wrap: normal; }
+.tbl .nowrap { white-space: nowrap; }
 
 .certcard { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; margin-bottom: 6px; }
 .certcard .role { font-size: 11px; color: var(--muted); }

@@ -1,5 +1,5 @@
 'use strict';
-/* global GoaChecks, GoaCert, GoaVulnDB, GoaProbes, GoaExport, GOA_RETIRE_DB, collectPage, collectGlobals */
+/* global GoaChecks, GoaCert, GoaVulnDB, GoaProbes, GoaExport, GoaSecrets, GOA_RETIRE_DB, collectPage, collectGlobals, collectScriptSources */
 // Goa Scan — popup et rapport complet (même page, ouverte avec ?tab=<id>).
 // Tout ce qui vient de la page analysée est inséré en textContent, jamais en HTML.
 
@@ -67,7 +67,7 @@ function watchIp(url) {
   const { hostname } = new URL(url);
   let ip = null;
   const on = (d) => {
-    if (!ip && d.ip && d.initiator === location.origin && new URL(d.url).hostname === hostname) ip = d.ip;
+    if (!ip && d.ip && !d.fromCache && d.initiator === location.origin && new URL(d.url).hostname === hostname) ip = d.ip;
   };
   const events = [chrome.webRequest.onResponseStarted, chrome.webRequest.onBeforeRedirect, chrome.webRequest.onCompleted];
   for (const ev of events) ev.addListener(on, { urls: ['<all_urls>'], types: ['xmlhttprequest'] });
@@ -76,6 +76,60 @@ function watchIp(url) {
     for (let i = 0; !ip && i < 6; i++) await new Promise((r) => setTimeout(r, 50));
     for (const ev of events) ev.removeListener(on);
     return ip;
+  };
+}
+
+// Secrets dans le JavaScript : scripts inline + scripts externes relus depuis l'extension,
+// sans cookies. Traqueurs ignorés ; dans les scripts tiers, seuls les formats de secrets
+// connus comptent (clés publiques, JWT et « secrets potentiels » y sont du bruit).
+const JS_MAX_SCRIPTS = 80;
+const JS_MAX_BYTES = 3e6;
+const JS_MAX_TOTAL = 25e6;
+
+function shortSrc(u) {
+  try {
+    const x = new URL(u);
+    const p = x.pathname.split('/').filter(Boolean);
+    return `${x.host}/${p.length > 2 ? '…/' : ''}${p.slice(-2).join('/')}`;
+  } catch {
+    return String(u).slice(0, 60);
+  }
+}
+
+async function scanJsSecrets(sources, pageUrl) {
+  if (!sources) return null;
+  const pageSite = GoaChecks.siteOf(new URL(pageUrl).hostname);
+  const hits = [];
+  const push = (list, third) => { for (const h of list) if (!(third && (h.public || h.sev === 'info'))) hits.push({ ...h, third }); };
+  for (const s of sources.inline) push(GoaSecrets.scan(s.text, `script inline n°${s.n}`), false);
+
+  // Scripts du site d'abord : ce sont eux qui portent les secrets de l'application.
+  const isThird = (u) => GoaChecks.siteOf(new URL(u).hostname) !== pageSite;
+  const urls = sources.urls.filter((u) => !GoaChecks.isTracker(new URL(u).hostname)).sort((a, b) => isThird(a) - isThird(b));
+  const todo = urls.slice(0, JS_MAX_SCRIPTS);
+  let bytes = sources.inline.reduce((n, s) => n + s.text.length, 0);
+  let external = 0;
+  const worker = async () => {
+    while (todo.length && bytes < JS_MAX_TOTAL) {
+      const u = todo.shift();
+      try {
+        const r = await fetch(u, { credentials: 'omit', cache: 'force-cache', signal: AbortSignal.timeout(TIMEOUT) });
+        if (!r.ok) continue;
+        const text = (await r.text()).slice(0, JS_MAX_BYTES);
+        bytes += text.length;
+        external++;
+        push(GoaSecrets.scan(text, shortSrc(u)), isThird(u));
+      } catch { /* script injoignable : ignoré */ }
+    }
+  };
+  await Promise.all(Array.from({ length: 6 }, worker));
+
+  // Même clé vue dans plusieurs scripts : une seule ligne.
+  const seen = new Set();
+  const unique = hits.filter((h) => !seen.has(h.id + h.value) && seen.add(h.id + h.value));
+  return {
+    scanned: { inline: sources.inline.length, external, bytes, trackers: sources.urls.length - urls.length, skipped: Math.max(0, urls.length - JS_MAX_SCRIPTS) },
+    hits: unique.slice(0, 100),
   };
 }
 
@@ -165,13 +219,14 @@ function headerMap(list) {
 async function gather(tab) {
   const url = tab.url;
   const stopIp = /^https?:/.test(url) ? watchIp(url) : async () => null;
-  const [net, dom, globals, cookies, securityTxt, tls] = await Promise.all([
+  const [net, dom, globals, cookies, securityTxt, tls, sources] = await Promise.all([
     withTimeout(chrome.runtime.sendMessage({ type: 'net', tabId: tab.id }).catch(() => null)),
     runInTab(tab.id, collectPage, 'ISOLATED'),
     runInTab(tab.id, collectGlobals, 'MAIN'),
     chrome.cookies.getAll({ url }).catch(() => []),
     fetchSecurityTxt(url),
     scanTls(tab),
+    runInTab(tab.id, collectScriptSources, 'ISOLATED'),
   ]);
 
   // La capture n'est valable que si elle concerne le document affiché (pas une page
@@ -195,6 +250,9 @@ async function gather(tab) {
   const ipInfo = ipNow
     ? { source: 'direct', load: ipLoad && ipLoad !== ipNow ? { ip: ipLoad, fromCache: !!captured.main.fromCache } : null }
     : { source: ipLoad && captured.main.fromCache ? 'cache' : 'load', load: null };
+
+  // Après la lecture de l'IP : les scripts relus viendraient fausser watchIp.
+  const jsSecrets = await scanJsSecrets(sources, url).catch(() => null);
 
   const vulns = GoaVulnDB.scan({ db: GOA_RETIRE_DB, scripts: (dom?.scripts || []).map((s) => s.src), globals: globals || {} });
 
@@ -223,6 +281,7 @@ async function gather(tab) {
     status,
     ip: ipNow || ipLoad,
     ipInfo,
+    jsSecrets,
     net: captured,
     navError,
     dom,
@@ -329,7 +388,7 @@ function exportReport(fmt) {
   const data = {
     tool: 'Goa Scan', version: raw.version, scannedAt: raw.scannedAt,
     url: raw.url, score: report.score, grade: report.grade, counts: report.counts,
-    findings: report.findings, tech: report.tech, hosts: report.hosts, apis: report.apis,
+    findings: report.findings, tech: report.tech, hosts: report.hosts, apis: report.apis, jsSecrets: raw.jsSecrets,
     status: raw.status, ip: raw.ip, ipInfo: raw.ipInfo, headerSource: raw.headerSource, headers: raw.rawHeaders,
     cookies: raw.cookies, tls: raw.tls, probes: raw.probes,
   };
@@ -618,6 +677,24 @@ function apiExtra() {
       out.push(el('p', { class: 'hint', text: 'Aucun appel fetch, XHR ou WebSocket depuis le chargement de la page.' }));
     }
     out.push(el('p', { class: 'hint', text: 'Les identifiants dans les chemins deviennent :id, :uuid, :hash ou :token pour regrouper les appels. Seuls les noms des paramètres et le type d’authentification sont gardés, jamais leurs valeurs. Les appels faits après l’analyse apparaissent en cliquant sur Relancer.' }));
+  }
+
+  const js = raw.jsSecrets;
+  if (js) {
+    const s = js.scanned;
+    out.push(el('h2', { text: 'Clés et secrets dans le JavaScript' }), facts([
+      ['Scripts lus', s.inline + s.external],
+      ['Volume', `${(s.bytes / 1e6).toFixed(1)} Mo`],
+      ['Trouvés', js.hits.length],
+    ]));
+    if (js.hits.length) {
+      out.push(table(['Type', 'Valeur masquée', 'Source'], js.hits.map((h) => [
+        el('span', {}, h.name, h.public ? el('span', { class: 'tag', text: ' · publique' }) : null),
+        el('span', { class: 'nowrap', text: h.value }),
+        `${h.source}${h.line > 1 ? `:${h.line}` : ''}${h.third ? ' (tiers)' : ''}`,
+      ])));
+    }
+    out.push(el('p', { class: 'hint', text: `Recherche par formats connus (AWS, Stripe, GitHub, GitLab, OpenAI, Anthropic, Slack, Discord, Telegram, SendGrid, clés privées, JWT Supabase…) dans ${s.inline} script(s) inline et ${s.external} script(s) externe(s) relus sans cookies${s.trackers ? `, ${s.trackers} script(s) de traqueurs ignoré(s)` : ''}${s.skipped ? `, ${s.skipped} au-delà de la limite de ${JS_MAX_SCRIPTS}` : ''}. Les valeurs sont masquées et ne quittent pas le navigateur.` }));
   }
 
   const doc = raw.probes?.apiDoc;

@@ -757,6 +757,44 @@
         items: failing5xx.map((a) => `${line(a)} → ${a.statuses.join(', ')}`).slice(0, 15),
       });
     }
+    // Clés et secrets dans le JavaScript (valeurs déjà masquées par secrets.js).
+    const js = input.jsSecrets;
+    if (js) {
+      const where = (x) => `${x.value} — ${x.source}${x.line > 1 ? `:${x.line}` : ''}${x.third ? ' (tiers)' : ''}`;
+      const groups = new Map();
+      for (const x of js.hits.filter((y) => !y.public && y.sev !== 'info')) {
+        if (!groups.has(x.id)) groups.set(x.id, []);
+        groups.get(x.id).push(x);
+      }
+      for (const [id, xs] of groups) {
+        add({
+          cat: 'api', id: `js-${id}`, sev: xs[0].sev, title: `${xs[0].name} dans le JavaScript${xs.length > 1 ? ` (${xs.length})` : ''}`,
+          detail: 'Tout ce qui est servi au navigateur est public : n’importe quel visiteur peut lire cette clé dans le code source et s’en servir.',
+          fix: 'Révoquer la clé tout de suite, puis la sortir du code client : les appels qui en ont besoin passent par le serveur.',
+          items: xs.map(where).slice(0, 15),
+        });
+      }
+      const toCheck = js.hits.filter((x) => !x.public && x.sev === 'info');
+      if (toCheck.length) {
+        add({
+          cat: 'api', id: 'js-to-check', title: `Secrets potentiels dans le JavaScript (${toCheck.length})`,
+          detail: 'Chaînes qui ressemblent à un secret (nom de variable évocateur, JWT codé en dur) sans format connu : à vérifier à la main.',
+          items: toCheck.map((x) => `${x.name} · ${where(x)}`).slice(0, 15),
+        });
+      }
+      const pub = js.hits.filter((x) => x.public);
+      if (pub.length) {
+        add({
+          cat: 'api', id: 'js-public-keys', title: `Clés publiques dans le JavaScript (${pub.length})`,
+          detail: 'Clés faites pour être servies au navigateur (Google Maps/Firebase, Stripe pk_, Supabase anon). Sans risque si elles sont restreintes : domaines autorisés, quotas, règles d’accès côté serveur.',
+          items: pub.map((x) => `${x.name} · ${where(x)}`).slice(0, 15),
+        });
+      }
+      if (!groups.size) {
+        add({ cat: 'api', id: 'js-secrets', ok: true, title: `Aucun secret reconnu dans le JavaScript (${js.scanned.inline + js.scanned.external} scripts)` });
+      }
+    }
+
     const doc = input.probes?.apiDoc;
     if (doc) {
       add({

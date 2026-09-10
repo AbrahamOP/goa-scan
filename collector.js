@@ -3,7 +3,31 @@
 // Elles sont sérialisées avant l'injection : aucune référence à une variable extérieure.
 // Tout ce qu'elles renvoient vient de la page, donc est traité comme non fiable.
 
-/* exported collectPage, collectGlobals */
+/* exported collectPage, collectGlobals, collectScriptSources */
+
+// Monde isolé : texte des scripts inline et adresse de tous les scripts, y compris ceux
+// chargés dynamiquement (import(), chunks), pour la recherche de secrets.
+function collectScriptSources() {
+  const MAX_ONE = 2e6;
+  const MAX_TOTAL = 6e6;
+  let total = 0;
+  let n = 0;
+  const inline = [];
+  const urls = new Set();
+  for (const s of document.scripts) {
+    if (s.src) { urls.add(s.src); continue; }
+    n++;
+    const t = s.textContent || '';
+    if (!t.trim() || total >= MAX_TOTAL) continue;
+    const text = t.slice(0, Math.min(MAX_ONE, MAX_TOTAL - total));
+    total += text.length;
+    inline.push({ n, text });
+  }
+  for (const e of performance.getEntriesByType('resource')) {
+    if (e.initiatorType === 'script' || /\.m?js(\?|$)/.test(e.name)) urls.add(e.name);
+  }
+  return { inline, urls: [...urls].filter((u) => /^https?:/.test(u)).slice(0, 80) };
+}
 
 // Monde isolé : lecture du DOM.
 function collectPage() {

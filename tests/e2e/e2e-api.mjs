@@ -40,8 +40,25 @@ try {
   const ids = await r.evaluate(() => state.report.findings.filter((f) => f.cat === 'api' && !f.ok).map((f) => `${f.sev}:${f.id}`));
   check('constats API', ['medium:api-url-secrets', 'low:api-basic', 'info:api-5xx'].every((x) => ids.includes(x)), ids);
 
+  // Secrets dans le JS : inline (AWS, clé Google publique, affectation) + app.js (Stripe, service_role).
+  const js = await r.evaluate(() => ({
+    scanned: state.raw.jsSecrets?.scanned,
+    hits: (state.raw.jsSecrets?.hits || []).map((h) => `${h.id}:${h.public ? 'pub' : h.sev}@${h.source}`),
+    findings: state.report.findings.filter((f) => f.id.startsWith('js-') && !f.ok).map((f) => `${f.sev}:${f.id}`),
+    raw: JSON.stringify(state.raw),
+  }));
+  console.log(JSON.stringify({ scanned: js.scanned, hits: js.hits, findings: js.findings }, null, 1));
+  const wanted = ['critical:js-stripe-secret', 'critical:js-supabase-service-role', 'high:js-aws-access-key', 'info:js-public-keys', 'info:js-to-check'];
+  check('secrets JS : constats attendus', wanted.every((x) => js.findings.includes(x)), js.findings);
+  check('secrets JS : app.js lu', js.hits.some((h) => h.includes('@127.0.0.1:8766/static/app.js')), js.hits);
+  const SK = 'sk_' + 'live_' + 'Z9y8X7w6'.repeat(3);
+  const AWS = 'AK' + 'IA' + 'Q3EGRTZ7LWBN4XKD';
+  check('secrets JS : aucune valeur complète conservée', !js.raw.includes(SK) && !js.raw.includes(AWS), 'valeur en clair dans state.raw');
+
   await r.evaluate(() => { state.active = 'api'; renderTabs(); renderPanel(); document.body.classList.remove('full'); });
   await r.screenshot({ path: `${OUT}api-tab.png` });
+  await r.evaluate(() => { const h = [...document.querySelectorAll('#panel h2')].find((x) => /JavaScript/.test(x.textContent)); h?.scrollIntoView(); });
+  await r.screenshot({ path: `${OUT}api-tab-secrets.png` });
 
   // Mode actif : la spécification OpenAPI doit être trouvée, pas les catch-all HTML.
   await r.evaluate(() => document.getElementById('tg-active').click());
