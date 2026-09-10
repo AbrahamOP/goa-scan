@@ -185,5 +185,19 @@ npm i --no-save puppeteer-core && node tests/e2e/e2e.mjs
 node tests/e2e/e2e-cert.mjs   # copie avec « debugger » obligatoire : github.com + badssl.com
 node tests/e2e/e2e-ip.mjs     # IP juste après un rechargement depuis le cache et un retour arrière
 python3 tests/e2e/fixture-active.py &
-node tests/e2e/e2e-api.mjs    # onglet API : appels capturés, Bearer/Basic, secrets dans l'URL, doc OpenAPI
+node tests/e2e/e2e-api.mjs    # onglet API + Code JS : appels, secrets, endpoints, paramètres, doc OpenAPI
 ```
+
+## Publication (Chrome Web Store)
+
+```bash
+node tools/package.mjs   # → dist/goa-scan-<version>.zip (vérifie les contraintes du store)
+```
+
+Ne sont embarqués que les fichiers exécutés (ni tests, ni `tools/`, ni docs). La
+marche à suivre complète — objet unique, justification des permissions, données
+collectées (aucune) et **visibilité « Non répertorié » / « Privé »** pour ne pas
+publier tout de suite — est dans [`docs/chrome-store.md`](docs/chrome-store.md).
+Textes de fiche : [`docs/store-listing.md`](docs/store-listing.md). Politique de
+confidentialité : [`PRIVACY.md`](PRIVACY.md). Captures : `store/screenshots/`
+(régénérables par `node tools/store-shots.mjs`).

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Goa Scan",
-  "version": "0.6.1",
-  "description": "Analyse la sécurité de la page active : certificat, en-têtes, cookies, contenu, requêtes, vulnérabilités JS. Note A–F sur l'icône, 100 % local.",
+  "version": "0.6.2",
+  "description": "Analyse la sécurité de la page active : certificat, en-têtes, cookies, secrets et appels d'API. Note A–F, 100 % local.",
   "minimum_chrome_version": "116",
   "permissions": ["scripting", "cookies", "webRequest", "storage"],
   "optional_permissions": ["debugger"],

@@ -22,3 +22,9 @@ jobs:
         run: for f in *.js tests/*.js; do node --check "$f"; done
       - name: Tests
         run: node --test tests/*.test.js
+      - name: Paquet Chrome Web Store
+        run: node tools/package.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goa-scan-extension
+          path: dist/*.zip
