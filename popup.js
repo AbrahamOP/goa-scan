@@ -60,6 +60,24 @@ async function fetchSecurityTxt(url) {
   }
 }
 
+// IP de l'origine lue sur nos propres requêtes sans cache (security.txt, secours) : celle
+// capturée au chargement peut venir du cache ou d'un proxy de préchargement.
+function watchIp(url) {
+  const { hostname } = new URL(url);
+  let ip = null;
+  const on = (d) => {
+    if (!ip && d.ip && d.initiator === location.origin && new URL(d.url).hostname === hostname) ip = d.ip;
+  };
+  const events = [chrome.webRequest.onResponseStarted, chrome.webRequest.onBeforeRedirect, chrome.webRequest.onCompleted];
+  for (const ev of events) ev.addListener(on, { urls: ['<all_urls>'], types: ['xmlhttprequest'] });
+  return async () => {
+    // L'événement peut arriver juste après la réponse du fetch.
+    for (let i = 0; !ip && i < 6; i++) await new Promise((r) => setTimeout(r, 50));
+    for (const ev of events) ev.removeListener(on);
+    return ip;
+  };
+}
+
 // Secours quand la page a été chargée avant l'extension : on redemande le document, sans cookies.
 async function refetchHeaders(url) {
   try {
@@ -145,6 +163,7 @@ function headerMap(list) {
 
 async function gather(tab) {
   const url = tab.url;
+  const stopIp = /^https?:/.test(url) ? watchIp(url) : async () => null;
   const [net, dom, globals, cookies, securityTxt, tls] = await Promise.all([
     withTimeout(chrome.runtime.sendMessage({ type: 'net', tabId: tab.id }).catch(() => null)),
     runInTab(tab.id, collectPage, 'ISOLATED'),
@@ -168,6 +187,13 @@ async function gather(tab) {
     const r = await refetchHeaders(url);
     if (r) ({ headers: rawHeaders, status } = r, headerSource = 'refetch');
   }
+
+  // IP : la connexion directe fait foi ; celle du chargement n'est gardée que si elle diffère.
+  const ipNow = await stopIp();
+  const ipLoad = captured?.main.ip || null;
+  const ipInfo = ipNow
+    ? { source: 'direct', load: ipLoad && ipLoad !== ipNow ? { ip: ipLoad, fromCache: !!captured.main.fromCache } : null }
+    : { source: ipLoad && captured.main.fromCache ? 'cache' : 'load', load: null };
 
   const vulns = GoaVulnDB.scan({ db: GOA_RETIRE_DB, scripts: (dom?.scripts || []).map((s) => s.src), globals: globals || {} });
 
@@ -194,7 +220,8 @@ async function gather(tab) {
     rawHeaders: rawHeaders || [],
     headerSource,
     status,
-    ip: captured?.main.ip || null,
+    ip: ipNow || ipLoad,
+    ipInfo,
     net: captured,
     navError,
     dom,
@@ -302,7 +329,7 @@ function exportReport(fmt) {
     tool: 'Goa Scan', version: raw.version, scannedAt: raw.scannedAt,
     url: raw.url, score: report.score, grade: report.grade, counts: report.counts,
     findings: report.findings, tech: report.tech, hosts: report.hosts,
-    status: raw.status, ip: raw.ip, headerSource: raw.headerSource, headers: raw.rawHeaders,
+    status: raw.status, ip: raw.ip, ipInfo: raw.ipInfo, headerSource: raw.headerSource, headers: raw.rawHeaders,
     cookies: raw.cookies, tls: raw.tls, probes: raw.probes,
   };
   download(JSON.stringify(data, null, 2), 'application/json', 'json');
@@ -395,6 +422,17 @@ function captureNote() {
     el('button', { type: 'button', onclick: reloadAndScan, text: 'Recharger et analyser' }));
 }
 
+function ipHint(raw) {
+  const info = raw.ipInfo;
+  if (info?.load) {
+    return `Adresse IP lue à l’instant sur une connexion directe. La page affichée venait de ${info.load.ip} : ${info.load.fromCache
+      ? 'elle a été resservie par le cache du navigateur, avec l’IP de sa première connexion'
+      : 'autre serveur du même domaine (CDN, plusieurs enregistrements DNS) ou proxy de préchargement'}.`;
+  }
+  if (info?.source === 'cache') return 'Adresse IP lue dans le cache du navigateur : c’est celle de la première connexion, elle peut avoir changé depuis.';
+  return null;
+}
+
 function summaryPanel() {
   const { raw, report } = state;
   const issues = report.findings.filter((f) => !f.ok && f.sev !== 'info');
@@ -410,6 +448,8 @@ function summaryPanel() {
       ['Scripts externes', raw.dom ? raw.dom.scripts.length : '—'],
     ]),
   ];
+  const ipNote = ipHint(raw);
+  if (ipNote) out.push(el('p', { class: 'hint', text: ipNote }));
   const note = captureNote();
   if (note) out.push(el('div', { style: 'margin-top:10px' }, note));
   if (!raw.dom) out.push(el('div', { class: 'note', text: 'Le contenu de cette page ne peut pas être inspecté (page protégée par Chrome, PDF ou document non HTML) : seuls les en-têtes et les cookies sont analysés.' }));

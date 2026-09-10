@@ -97,6 +97,8 @@ function onMainCompleted(d) {
   const rec = tabs.get(d.tabId);
   if (!rec || rec.requestId !== d.requestId || !rec.main) return;
   rec.main.ip = d.ip || null;
+  // Resservie par le cache, la page porte l'IP de sa première connexion, pas l'actuelle.
+  rec.main.fromCache = !!d.fromCache;
   touch(d.tabId);
 }
 

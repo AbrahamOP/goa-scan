@@ -129,4 +129,5 @@ dans `/tmp/goa-scan-shots/`) :
 python3 tests/e2e/fixture.py &
 npm i --no-save puppeteer-core && node tests/e2e/e2e.mjs
 node tests/e2e/e2e-cert.mjs   # copie avec « debugger » obligatoire : github.com + badssl.com
+node tests/e2e/e2e-ip.mjs     # IP juste après un rechargement depuis le cache et un retour arrière
 ```

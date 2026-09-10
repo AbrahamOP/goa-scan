@@ -23,7 +23,7 @@
     L.push(`- **URL analysée** : ${raw.url}`);
     L.push(`- **Note** : ${report.grade} (${report.score}/100)`);
     if (raw.status != null) L.push(`- **Statut HTTP** : ${raw.status}`);
-    if (raw.ip) L.push(`- **Adresse IP** : ${raw.ip}`);
+    if (raw.ip) L.push(`- **Adresse IP** : ${raw.ip}${raw.ipInfo?.load ? ` (page servie par ${raw.ipInfo.load.ip}${raw.ipInfo.load.fromCache ? ', depuis le cache' : ''})` : ''}`);
     const c = report.counts;
     L.push(`- **Constats** : ${c.critical} critique(s), ${c.high} haute(s), ${c.medium} moyenne(s), ${c.low} faible(s)`);
     L.push('');
