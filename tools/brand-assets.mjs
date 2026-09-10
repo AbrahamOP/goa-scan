@@ -3,6 +3,7 @@
 //   store/social-preview.png  1280×640  aperçu des liens GitHub (Settings → Social preview, à téléverser à la main)
 //   store/promo-small.png      440×280  tuile promo du Chrome Web Store (obligatoire)
 //   store/promo-marquee.png   1400×560  bannière « marquee » du Chrome Web Store (facultative)
+//   store/showcase.png        1636×780  vitrine du README : 3 popups à taille réelle (lancer tools/store-shots.mjs avant)
 // Polices : celles de l'extension (fonts/) + Fraunces italique (FRAUNCES=…, défaut ~/.fonts).
 // Usage : node tools/brand-assets.mjs
 import puppeteer from 'puppeteer-core';
@@ -54,6 +55,11 @@ body { width: var(--w); height: var(--h); background: #0a1411; color: #e6f2ec; f
 .sev { font-family: JBM, monospace; font-weight: 700; font-size: calc(var(--s) * 11px); letter-spacing: .04em; border-radius: 4px; padding: 2px 6px; min-width: 6.4em; text-align: center; }
 .crit { background: #e07a7a; color: #0a1411; } .high { border: 1px solid #e07a7a; color: #e07a7a; }
 .med { border: 1px solid #8e84f0; color: #8e84f0; } .low { border: 1px solid #5d7268; color: #9ab8ab; }
+/* vitrine : popups à taille réelle */
+.show { width: 100%; display: flex; justify-content: center; gap: 56px; }
+.pop img { display: block; width: 460px; height: 600px; border: 1px solid #1c2b24; border-radius: 14px; box-shadow: 0 24px 60px rgba(0,0,0,.45); }
+.pop h3 { font: 600 19px Inter, sans-serif; color: #e6f2ec; margin-top: 22px; text-align: center; }
+.pop p { font: 15px Inter, sans-serif; color: #9ab8ab; margin-top: 6px; text-align: center; }
 /* tuile promo : logo + nom seulement */
 .tile { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
 .tile .logo { width: 104px; height: 104px; } .tile .word { font-size: 44px; } .tile .tag { font-size: 17px; margin: 0; text-align: center; max-width: 20em; }
@@ -71,6 +77,16 @@ const ASSETS = [
   { file: 'promo-small.png', w: 440, h: 280, s: 1, gap: 0, pad: 0, body: () => `<div class="tile"><div class="logo">${icon}</div><div class="word">Goa Scan</div><p class="tag">Web security, scored A–F. Local.</p></div>` },
 ];
 
+const SHOWCASE = [
+  ['summary', 'Grade & findings', 'Ranked by severity, with a fix for each'],
+  ['cert', 'TLS certificate', 'Decoded chain, protocol, cipher, pinning'],
+  ['jscode', 'Secrets in JavaScript', 'AWS, Stripe, Supabase… values masked'],
+];
+if (SHOWCASE.every(([f]) => fs.existsSync(path.join(OUT, 'readme', `${f}.png`)))) {
+  ASSETS.push({ file: 'showcase.png', w: 1636, h: 780, s: 1, gap: 0, pad: 0, dsf: 2, body: () => `<div class="show">${SHOWCASE.map(([f, t, d]) =>
+    `<div class="pop"><img src="${pathToFileURL(path.join(OUT, 'readme', `${f}.png`)).href}"><h3>${t}</h3><p>${d}</p></div>`).join('')}</div>` });
+} else console.warn('showcase.png ignorée : lancer d\'abord node tools/store-shots.mjs');
+
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'goa-scan-brand-'));
 const browser = await puppeteer.launch({ executablePath: process.env.CHROME || '/usr/bin/chromium', headless: true, args: ['--no-sandbox', '--allow-file-access-from-files'] });
 try {
@@ -78,7 +94,7 @@ try {
   for (const a of ASSETS) {
     const html = path.join(tmp, `${a.file}.html`);
     fs.writeFileSync(html, `<!doctype html><meta charset="utf-8"><style>${css}</style><body style="--w:${a.w}px;--h:${a.h}px;--s:${a.s};--gap:${a.gap}px;--pad:${a.pad}px"><div class="wrap">${a.body()}</div>`);
-    await page.setViewport({ width: a.w, height: a.h, deviceScaleFactor: 1 });
+    await page.setViewport({ width: a.w, height: a.h, deviceScaleFactor: a.dsf || 1 });
     await page.goto(pathToFileURL(html).href, { waitUntil: 'load' });
     await page.evaluate(() => document.fonts.ready);
     const missing = await page.evaluate(() => [...document.fonts].filter((f) => f.status === 'error').map((f) => f.family));
