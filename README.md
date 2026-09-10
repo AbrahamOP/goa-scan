@@ -10,6 +10,18 @@ besoin, une requête de secours pour les en-têtes). Le mode actif (opt-in) ajou
 sondes vers ce même site et des requêtes DNS-over-HTTPS. Les liens « Aller plus loin »
 (SSL Labs, VirusTotal…) n'envoient le domaine qu'au clic.
 
+## Ce qui a été ajouté en 0.5.0
+
+- **Endpoints cités dans le JavaScript** (onglet API), à la LinkFinder : dans les scripts
+  du site et les scripts inline, toute chaîne qui ressemble à une adresse (URL absolue,
+  `/chemin`, `api/…`, gabarits `` `/api/x/${id}` `` → `/api/x/:param`). Les fichiers
+  statiques et les URL d'espaces de noms (w3.org…) sont écartés, et les identifiants
+  regroupés comme pour les appels.
+- Chaque endpoint est **recoupé** avec les appels vus pendant la visite (« appelé ») : les
+  autres sont la surface que la navigation n'a pas touchée. Les chemins sensibles
+  (`/admin`, `/internal`, `/debug`, `/actuator`, `/swagger`…) du site sont signalés « à
+  vérifier ». Export Markdown et JSON.
+
 ## Ce qui a été ajouté en 0.4.0
 
 - **Clés et secrets dans le JavaScript** (onglet API) : scripts inline et scripts externes,
@@ -58,7 +70,7 @@ sondes vers ce même site et des requêtes DNS-over-HTTPS. Les liens « Aller pl
 | **Exposition** | version du serveur, `X-Powered-By` & co, `meta generator`, bibliothèques JS vulnérables (jQuery, jQuery UI, AngularJS, Bootstrap, Lodash, Moment), `security.txt` |
 | **Cookies** | Secure, HttpOnly sur les cookies de session, SameSite — tableau complet, **sans jamais lire les valeurs** |
 | **Contenu** | mot de passe sur page HTTP, formulaire posté en clair ou vers un autre site, scripts tiers sans SRI, iframes tierces sans sandbox, jetons (JWT…) dans localStorage/sessionStorage (noms de clés seulement), commentaires HTML sensibles, e-mails exposés, scripts inline et gestionnaires `on*` |
-| **API** | appels fetch/XHR/WebSocket (méthode, endpoint regroupé en `:id`, statut, type de réponse, schéma d'auth), jetons ou clés dans l'URL, HTTP Basic, erreurs 5xx ; clés et secrets dans le code JavaScript (valeurs masquées) ; en mode actif, documentation OpenAPI/Swagger publique et ses routes |
+| **API** | appels fetch/XHR/WebSocket (méthode, endpoint regroupé en `:id`, statut, type de réponse, schéma d'auth), jetons ou clés dans l'URL, HTTP Basic, erreurs 5xx ; clés et secrets dans le code JavaScript (valeurs masquées) ; endpoints cités dans le code, recoupés avec les appels ; en mode actif, documentation OpenAPI/Swagger publique et ses routes |
 | **Réseau** | requêtes émises par la page, domaines contactés, tiers, traqueurs connus, IP du serveur |
 
 Technologies détectées : serveur, CDN (Cloudflare, CloudFront, Fastly, Vercel,

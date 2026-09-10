@@ -96,12 +96,26 @@ function shortSrc(u) {
   }
 }
 
-async function scanJsSecrets(sources, pageUrl) {
+async function scanJs(sources, pageUrl) {
   if (!sources) return null;
   const pageSite = GoaChecks.siteOf(new URL(pageUrl).hostname);
   const hits = [];
   const push = (list, third) => { for (const h of list) if (!(third && (h.public || h.sev === 'info'))) hits.push({ ...h, third }); };
-  for (const s of sources.inline) push(GoaSecrets.scan(s.text, `script inline n°${s.n}`), false);
+  // Endpoints : scripts du site et inline seulement (les chemins d'un SDK tiers sont du bruit).
+  const eps = new Map();
+  const addEndpoints = (text, source) => {
+    for (const e of GoaSecrets.endpoints(text)) {
+      let u;
+      try { u = new URL(e.path, pageUrl); } catch { continue; }
+      if (!/^https?:$/.test(u.protocol)) continue;
+      const n = GoaChecks.apiEndpoint('GET', u);
+      if (!eps.has(n.url) && eps.size < 500) eps.set(n.url, { url: n.url, params: n.params, source, line: e.line });
+    }
+  };
+  for (const s of sources.inline) {
+    push(GoaSecrets.scan(s.text, `script inline n°${s.n}`), false);
+    addEndpoints(s.text, `script inline n°${s.n}`);
+  }
 
   // Scripts du site d'abord : ce sont eux qui portent les secrets de l'application.
   const isThird = (u) => GoaChecks.siteOf(new URL(u).hostname) !== pageSite;
@@ -119,6 +133,7 @@ async function scanJsSecrets(sources, pageUrl) {
         bytes += text.length;
         external++;
         push(GoaSecrets.scan(text, shortSrc(u)), isThird(u));
+        if (!isThird(u)) addEndpoints(text, shortSrc(u));
       } catch { /* script injoignable : ignoré */ }
     }
   };
@@ -130,6 +145,7 @@ async function scanJsSecrets(sources, pageUrl) {
   return {
     scanned: { inline: sources.inline.length, external, bytes, trackers: sources.urls.length - urls.length, skipped: Math.max(0, urls.length - JS_MAX_SCRIPTS) },
     hits: unique.slice(0, 100),
+    endpoints: [...eps.values()],
   };
 }
 
@@ -252,7 +268,7 @@ async function gather(tab) {
     : { source: ipLoad && captured.main.fromCache ? 'cache' : 'load', load: null };
 
   // Après la lecture de l'IP : les scripts relus viendraient fausser watchIp.
-  const jsSecrets = await scanJsSecrets(sources, url).catch(() => null);
+  const js = await scanJs(sources, url).catch(() => null);
 
   const vulns = GoaVulnDB.scan({ db: GOA_RETIRE_DB, scripts: (dom?.scripts || []).map((s) => s.src), globals: globals || {} });
 
@@ -281,7 +297,8 @@ async function gather(tab) {
     status,
     ip: ipNow || ipLoad,
     ipInfo,
-    jsSecrets,
+    jsSecrets: js && { scanned: js.scanned, hits: js.hits },
+    jsEndpoints: js?.endpoints || null,
     net: captured,
     navError,
     dom,
@@ -388,7 +405,7 @@ function exportReport(fmt) {
   const data = {
     tool: 'Goa Scan', version: raw.version, scannedAt: raw.scannedAt,
     url: raw.url, score: report.score, grade: report.grade, counts: report.counts,
-    findings: report.findings, tech: report.tech, hosts: report.hosts, apis: report.apis, jsSecrets: raw.jsSecrets,
+    findings: report.findings, tech: report.tech, hosts: report.hosts, apis: report.apis, jsSecrets: raw.jsSecrets, jsEndpoints: report.jsEndpoints,
     status: raw.status, ip: raw.ip, ipInfo: raw.ipInfo, headerSource: raw.headerSource, headers: raw.rawHeaders,
     cookies: raw.cookies, tls: raw.tls, probes: raw.probes,
   };
@@ -646,20 +663,20 @@ const shortType = (ct) => (ct ? ct.replace(/^(application|text)\//, '') : '—')
 function apiExtra() {
   const { raw, report } = state;
   const out = [];
+  const tag = (t) => el('span', { class: 'tag', text: ` · ${t}` });
+  // Chemin seul pour les adresses de la page elle-même : la colonne reste lisible dans le popup.
+  const pageOrigin = new URL(raw.url).origin;
+  const shown = (u) => (u.startsWith(`${pageOrigin}/`) ? u.slice(pageOrigin.length) : u.replace(/^(https?|wss?):\/\//, ''));
   if (!raw.net) {
     out.push(captureNote());
   } else {
     const apis = report.apis;
-    const tag = (t) => el('span', { class: 'tag', text: ` · ${t}` });
     out.push(el('h2', { text: 'Appels d’API de la page' }), facts([
       ['Endpoints', apis.length],
       ['Appels', apis.reduce((s, a) => s + a.n, 0)],
       ['Domaines', new Set(apis.map((a) => a.host)).size],
     ]));
     if (apis.length) {
-      // Chemin seul pour les appels vers la page elle-même : la colonne reste lisible dans le popup.
-      const pageOrigin = new URL(raw.url).origin;
-      const shown = (u) => (u.startsWith(`${pageOrigin}/`) ? u.slice(pageOrigin.length) : u.replace(/^(https?|wss?):\/\//, ''));
       const tbl = table(['Méthode', 'Endpoint', 'Appels', 'Statut', 'Réponse', 'Auth'], apis.map((a) => [
         a.ws ? 'WS' : a.method,
         el('span', { title: a.url }, shown(a.url),
@@ -695,6 +712,21 @@ function apiExtra() {
       ])));
     }
     out.push(el('p', { class: 'hint', text: `Recherche par formats connus (AWS, Stripe, GitHub, GitLab, OpenAI, Anthropic, Slack, Discord, Telegram, SendGrid, clés privées, JWT Supabase…) dans ${s.inline} script(s) inline et ${s.external} script(s) externe(s) relus sans cookies${s.trackers ? `, ${s.trackers} script(s) de traqueurs ignoré(s)` : ''}${s.skipped ? `, ${s.skipped} au-delà de la limite de ${JS_MAX_SCRIPTS}` : ''}. Les valeurs sont masquées et ne quittent pas le navigateur.` }));
+  }
+
+  const eps = report.jsEndpoints;
+  if (raw.jsEndpoints) {
+    const called = eps.filter((e) => e.called).length;
+    out.push(el('h2', { text: `Endpoints cités dans le JavaScript (${eps.length})` }));
+    if (eps.length) {
+      out.push(table(['Endpoint', 'Vu', 'Source'], eps.slice(0, 200).map((e) => [
+        el('span', { title: e.url }, shown(e.url), e.sensitive ? tag('sensible') : null, e.third ? tag('autre domaine') : null,
+          e.params.length ? el('div', { class: 'params', text: `?${e.params.join('&')}` }) : null),
+        el('span', { class: 'nowrap', text: e.called ? 'appelé' : '—' }),
+        `${e.source}${e.line > 1 ? `:${e.line}` : ''}`,
+      ])));
+    }
+    out.push(el('p', { class: 'hint', text: `Chaînes du code qui ressemblent à une adresse, dans les scripts du site et les scripts inline. ${called} appelée(s) pendant la visite ; les autres sont la surface que la navigation n’a pas touchée. On y trouve aussi des routes de pages et quelques faux positifs.${eps.length > 200 ? ' 200 premières affichées, toutes dans l’export.' : ''}` }));
   }
 
   const doc = raw.probes?.apiDoc;

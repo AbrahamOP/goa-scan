@@ -36,6 +36,11 @@ APP_JS = ("""// bundle de démonstration
 var stripe = Stripe("%s");
 var admin = "%s";
 var supa = createClient("https://x.supabase.co", "%s");
+fetch("/api/v2/admin/users/" + id);
+const exportUrl = `/api/internal/export/${fmt}`;
+const orders = "https://api.exemple.fr/v1/orders?status=open";
+const logo = "/static/logo.png";
+const svgNs = "http://www.w3.org/2000/svg";
 """ % (PK, SK, SERVICE_ROLE)).encode()
 SPEC = json.dumps({"openapi": "3.0.1", "info": {"title": "Fixture API"}, "paths": {
     "/api/users/{id}": {"get": {"summary": "Un utilisateur"}},

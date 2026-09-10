@@ -55,8 +55,19 @@ try {
   const AWS = 'AK' + 'IA' + 'Q3EGRTZ7LWBN4XKD';
   check('secrets JS : aucune valeur complète conservée', !js.raw.includes(SK) && !js.raw.includes(AWS), 'valeur en clair dans state.raw');
 
+  // Endpoints cités dans le JS : recoupés avec les appels, statiques et espaces de noms écartés.
+  const eps = await r.evaluate(() => state.report.jsEndpoints.map((e) => ({ url: e.url, called: e.called, sensitive: e.sensitive, third: e.third })));
+  console.log(JSON.stringify(eps, null, 1));
+  const ep = (end) => eps.find((e) => e.url.endsWith(end));
+  check('endpoint JS appelé : /api/users/:id', ep('/api/users/:id')?.called === true, eps);
+  check('endpoint JS sensible non appelé : /api/internal/export/:param', ep('/api/internal/export/:param')?.sensitive && !ep('/api/internal/export/:param').called, eps);
+  check('endpoint JS autre domaine : api.exemple.fr/v1/orders', ep('api.exemple.fr/v1/orders')?.third === true, eps);
+  check('ni logo.png ni w3.org', !eps.some((e) => /logo\.png|w3\.org/.test(e.url)), eps);
+
   await r.evaluate(() => { state.active = 'api'; renderTabs(); renderPanel(); document.body.classList.remove('full'); });
   await r.screenshot({ path: `${OUT}api-tab.png` });
+  await r.evaluate(() => { const h = [...document.querySelectorAll('#panel h2')].find((x) => /Endpoints cités/.test(x.textContent)); h?.scrollIntoView(); });
+  await r.screenshot({ path: `${OUT}api-tab-endpoints.png` });
   await r.evaluate(() => { const h = [...document.querySelectorAll('#panel h2')].find((x) => /JavaScript/.test(x.textContent)); h?.scrollIntoView(); });
   await r.screenshot({ path: `${OUT}api-tab-secrets.png` });
 

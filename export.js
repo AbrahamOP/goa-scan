@@ -64,6 +64,14 @@
       }
       L.push('', '_Noms de paramètres seulement : les valeurs ne sont pas collectées._', '');
     }
+    if (report.jsEndpoints?.length) {
+      L.push(`## Endpoints cités dans le JavaScript (${report.jsEndpoints.length})`, '');
+      for (const e of report.jsEndpoints) {
+        const flags = [e.called && 'appelé', e.sensitive && 'sensible', e.third && 'autre domaine'].filter(Boolean);
+        L.push(`- \`${esc(e.url)}\`${flags.length ? ` — ${flags.join(', ')}` : ''}`);
+      }
+      L.push('');
+    }
     const doc = raw.probes?.apiDoc;
     if (doc) {
       L.push(`## Documentation ${doc.kind} ${doc.version} (${esc(doc.path)})`, '');

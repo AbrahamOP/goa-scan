@@ -76,3 +76,18 @@ test('documentation d’API publique → constat faible + export Markdown', () =
   assert.match(md, /\| GET \| https:\/\/exemple\.fr\/api\/items \| 1 \| 200 \| — \|/);
   assert.match(md, /## Documentation OpenAPI 3\.0\.1 \(\/openapi\.json\)/);
 });
+
+test('endpoints du JS recoupés avec les appels vus, chemins sensibles signalés', () => {
+  const ep = (u) => { const e = C.apiEndpoint('GET', u); return { url: e.url, params: e.params, source: 'app.js', line: 1 }; };
+  const r = C.analyze(input({
+    net: net(api('GET', 'https://exemple.fr/api/users/7')),
+    jsEndpoints: [ep('https://exemple.fr/api/users/1'), ep('https://exemple.fr/admin/export'), ep('https://tiers.io/admin')],
+  }));
+  const by = Object.fromEntries(r.jsEndpoints.map((e) => [e.url, e]));
+  assert.equal(by['https://exemple.fr/api/users/:id'].called, true);
+  assert.equal(by['https://exemple.fr/admin/export'].sensitive, true);
+  assert.equal(by['https://exemple.fr/admin/export'].called, false);
+  assert.equal(by['https://tiers.io/admin'].third, true);
+  // Un chemin sensible d'un autre domaine n'est pas le problème du site analysé.
+  assert.deepEqual(find(r, 'js-endpoints-sensitive').items, ['https://exemple.fr/admin/export']);
+});

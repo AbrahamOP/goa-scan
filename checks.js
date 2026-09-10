@@ -56,6 +56,8 @@
   const SECRET_PARAM = /^(access[_-]?token|id[_-]?token|refresh[_-]?token|token|auth|authorization|secret|client[_-]?secret|password|passwd|pwd|pass|session(id)?|sid|jwt|bearer)$/i;
   const KEY_PARAM = /^(api[_-]?key|apikey|key|app[_-]?key|access[_-]?key|x-api-key)$/i;
 
+  const SENSITIVE_PATH = /\/(admin|administrator|internal|private|debug|dev|staging|test|backup|backups|config|actuator|console|phpmyadmin|manage|management|swagger|graphiql|\.env|\.git)(\/|$|\?)/i;
+
   // Regroupe /users/123 et /users/456 sous /users/:id.
   function normSegment(s) {
     if (/^\d+$/.test(s)) return ':id';
@@ -757,6 +759,24 @@
         items: failing5xx.map((a) => `${line(a)} → ${a.statuses.join(', ')}`).slice(0, 15),
       });
     }
+    // Endpoints cités dans le JavaScript, recoupés avec les appels vus pendant la visite.
+    const jsEndpoints = (input.jsEndpoints || []).map((e) => {
+      const host = hostOf(e.url);
+      return {
+        ...e, host, third: siteOf(host) !== pageSite,
+        called: apis.some((a) => a.url === e.url),
+        sensitive: SENSITIVE_PATH.test(e.url.slice(e.url.indexOf('/', 8))),
+      };
+    }).sort((a, b) => (a.third - b.third) || (b.sensitive - a.sensitive) || a.url.localeCompare(b.url));
+    const sensitiveEps = jsEndpoints.filter((e) => e.sensitive && !e.third);
+    if (sensitiveEps.length) {
+      add({
+        cat: 'api', id: 'js-endpoints-sensitive', title: `Chemins sensibles cités dans le JavaScript (${sensitiveEps.length})`,
+        detail: 'Administration, débogage, environnements de test ou sauvegardes cités dans le code servi au navigateur : vérifier qu’ils sont protégés côté serveur, pas seulement cachés dans l’interface.',
+        items: sensitiveEps.map((e) => `${e.url}${e.called ? ' (appelé)' : ''}`).slice(0, 15),
+      });
+    }
+
     // Clés et secrets dans le JavaScript (valeurs déjà masquées par secrets.js).
     const js = input.jsSecrets;
     if (js) {
@@ -814,7 +834,7 @@
     const counts = Object.fromEntries(ORDER.map((s) => [s, findings.filter((f) => !f.ok && f.sev === s).length]));
     findings.sort((a, b) => (a.ok - b.ok) || (ORDER.indexOf(a.sev) - ORDER.indexOf(b.sev)));
 
-    return { score, grade: gradeOf(score), counts, findings, hosts, apis, tech: detectTech(input), https };
+    return { score, grade: gradeOf(score), counts, findings, hosts, apis, jsEndpoints, tech: detectTech(input), https };
   }
 
   function detectTech(input) {

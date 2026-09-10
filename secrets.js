@@ -103,7 +103,40 @@
     return hits;
   }
 
-  const api = { scan, mask, RULES };
+  // ── Endpoints cités dans le code (à la LinkFinder) ─────────────
+  // Chaînes entre guillemets qui ressemblent à une adresse : URL absolue, chemin absolu,
+  // ou chemin d'API relatif (api/…, v1/…). Les fichiers statiques et les URL d'espaces de
+  // noms (w3.org…) sont écartés. Plafond : faux positifs possibles (routes de pages).
+  const QUOTED = /["'`]((?:https?:)?\/\/[^"'`\s<>\\]{3,300}|\/[A-Za-z0-9_$~.-][^"'`\s<>\\]{1,300}|(?:api|v\d+|graphql|rest|rpc)\/[^"'`\s<>\\]{1,300})["'`]/g;
+  const ASSET = /\.(m?js|css|map|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|eot|mp4|webm|mp3|wav|txt|md|html?)$/i;
+  const NOISE_HOST = /(^|\.)(w3\.org|schema\.org|ogp\.me|purl\.org|xmlns\.com|apache\.org|opensource\.org|creativecommons\.org)$/i;
+
+  function endpoints(text, { max = 300 } = {}) {
+    const out = [];
+    const seen = new Set();
+    // Les correspondances arrivent dans l'ordre : on compte les lignes au fil de l'eau.
+    let line = 1;
+    let pos = 0;
+    for (const m of text.matchAll(QUOTED)) {
+      let p = m[1].replace(/\$\{[^}]*\}/g, ':param');
+      if (p.startsWith('//')) p = `https:${p}`;
+      if (seen.has(p) || !/[a-z]{2}/i.test(p) || ASSET.test(p.split(/[?#]/)[0])) continue;
+      if (/^https?:/.test(p)) {
+        let host;
+        try { host = new URL(p).hostname; } catch { continue; }
+        if (NOISE_HOST.test(host)) continue;
+      } else if (p.includes('//')) {
+        continue;
+      }
+      seen.add(p);
+      for (let i = text.indexOf('\n', pos); i !== -1 && i < m.index; i = text.indexOf('\n', i + 1)) { line++; pos = i + 1; }
+      out.push({ path: p, line });
+      if (out.length >= max) break;
+    }
+    return out;
+  }
+
+  const api = { scan, mask, endpoints, RULES };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.GoaSecrets = api;
 })(globalThis);

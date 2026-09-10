@@ -60,6 +60,13 @@ test('clé privée : seul l’en-tête est rapporté', () => {
   assert.equal(hits[0].value, '-----BEGIN RSA PRIVATE KEY-----');
 });
 
+test('endpoints : chemins, URL, gabarits ; fichiers statiques et espaces de noms écartés', () => {
+  const text = 'a="/api/users/42";\nb=`/api/items/${id}/share`;\nc="https://api.exemple.fr/v1/x?y=1";\nd="/static/logo.png";\ne="http://www.w3.org/2000/svg";\nf="api/v2/orders";\ng="//cdn.exemple.fr/data";\nh="/";\ni="a/b";';
+  const eps = S.endpoints(text);
+  assert.deepEqual(eps.map((e) => e.path), ['/api/users/42', '/api/items/:param/share', 'https://api.exemple.fr/v1/x?y=1', 'api/v2/orders', 'https://cdn.exemple.fr/data']);
+  assert.deepEqual(eps.map((e) => e.line), [1, 2, 3, 6, 7]);
+});
+
 test('analyse : un constat par type de secret, publiques et « à vérifier » à part', () => {
   const hits = [
     ...S.scan(`"${AWS}" "${SK}" "${PK}"`, 'app.js'),
