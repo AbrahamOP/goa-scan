@@ -3,6 +3,7 @@
 // Usage : node tools/store-shots.mjs   → store/screenshots/*.png
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,7 +12,15 @@ const OUT = path.join(root, 'store', 'screenshots');
 fs.mkdirSync(OUT, { recursive: true });
 const W = 1280, H = 800;
 
-const browser = await puppeteer.launch({ executablePath: process.env.CHROME || '/usr/bin/chromium', headless: true, pipe: true, enableExtensions: [root], args: ['--no-sandbox', `--window-size=${W},${H}`] });
+// Copie avec « debugger » obligatoire : la demande optionnelle exige un clic humain, et sans
+// elle l'onglet Certificat n'affiche que le bouton d'activation.
+const EXT = fs.mkdtempSync(path.join(os.tmpdir(), 'goa-scan-shots-'));
+fs.cpSync(root, EXT, { recursive: true, filter: (p) => !/\/(\.git|tests|store|dist|node_modules)(\/|$)/.test(p.slice(root.length)) });
+const m = JSON.parse(fs.readFileSync(path.join(EXT, 'manifest.json'), 'utf8'));
+m.permissions.push('debugger'); delete m.optional_permissions;
+fs.writeFileSync(path.join(EXT, 'manifest.json'), JSON.stringify(m));
+
+const browser = await puppeteer.launch({ executablePath: process.env.CHROME || '/usr/bin/chromium', headless: true, pipe: true, enableExtensions: [EXT], args: ['--no-sandbox', `--window-size=${W},${H}`] });
 try {
   const swT = await browser.waitForTarget((t) => t.type() === 'service_worker' && t.url().startsWith('chrome-extension://'), { timeout: 15000 });
   await (await swT.worker()).evaluate(() => ready);
@@ -27,6 +36,7 @@ try {
     await r.goto(`${base}?tab=${tabId}`);
     await r.waitForFunction(() => typeof state !== 'undefined' && state.report && !state.busy, { timeout: 30000, polling: 250 });
     await r.evaluate((t) => { document.body.classList.add('full'); if (t) { state.active = t; renderTabs(); renderPanel(); } }, tab);
+    if (tab === 'cert') await r.evaluate(() => document.querySelector('.certcard details')?.setAttribute('open', ''));
     await r.evaluate(() => { document.getElementById('panel').scrollTop = 0; window.scrollTo(0, 0); });
     await r.screenshot({ path: path.join(OUT, `${name}.png`), clip: { x: 0, y: 0, width: W, height: H } });
     await r.close(); await page.close();
@@ -39,4 +49,5 @@ try {
   await shot('http://127.0.0.1:8766/', '4-api', 'api');
 } finally {
   await browser.close();
+  fs.rmSync(EXT, { recursive: true, force: true });
 }

@@ -1,0 +1,27 @@
+name: Bug or false positive
+description: Something is wrong, a finding is incorrect, or an issue was missed
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Never paste a real secret, token or cookie value here. For a vulnerability in Goa Scan itself, use SECURITY.md instead."
+  - type: input
+    id: url
+    attributes:
+      label: Page analysed
+      description: URL, or attach a minimal HTML page reproducing the case
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Goa Scan version and browser
+      placeholder: "0.6.2 — Chrome 128"
+    validations:
+      required: true

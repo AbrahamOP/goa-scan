@@ -1,0 +1,16 @@
+name: New check or feature
+description: Suggest a security check or an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What should Goa Scan detect or do?
+      description: Include a reference (OWASP, MDN, RFC…) and a page showing the case if you have one
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Suggested severity
+      options: [critical, high, medium, low, info, not a finding]
