@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Goa Scan</title>
+  <link rel="icon" href="icons/icon32.png">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <img src="icons/mark.svg" alt="" width="26" height="26">
+      <span class="wordmark">Goa Scan</span>
+    </div>
+    <div class="target" id="target"></div>
+  </header>
+
+  <section class="scorecard" id="scorecard" hidden>
+    <div class="grade" id="grade"></div>
+    <div class="scoreinfo">
+      <div class="score"><span id="score"></span><span class="of">/100</span></div>
+      <div class="counts" id="counts"></div>
+    </div>
+  </section>
+
+  <nav class="tabs" id="tabs" role="tablist" hidden></nav>
+
+  <main id="panel" class="panel" tabindex="-1">
+    <p class="status">Analyse en cours…</p>
+  </main>
+
+  <footer class="actions" id="actions">
+    <button type="button" id="rescan">Relancer</button>
+    <button type="button" id="reload" title="Recharge la page pour capturer ses en-têtes et ses requêtes">Recharger la page</button>
+    <button type="button" id="full">Rapport complet</button>
+    <button type="button" id="export">Exporter JSON</button>
+  </footer>
+
+  <script src="checks.js"></script>
+  <script src="collector.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

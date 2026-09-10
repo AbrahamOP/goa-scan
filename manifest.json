@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Goa Scan",
+  "version": "0.1.0",
+  "description": "Analyse la sécurité de la page active : HTTPS, en-têtes, cookies, contenu, requêtes, technologies. 100 % local.",
+  "minimum_chrome_version": "116",
+  "permissions": ["scripting", "cookies", "webRequest", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Goa Scan — analyser cette page",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
