@@ -72,6 +72,10 @@
       }
       L.push('');
     }
+    if (raw.jsParams?.length) {
+      L.push(`## Paramètres cités dans le JavaScript (${raw.jsParams.length})`, '');
+      L.push(raw.jsParams.map((p) => `\`${esc(p.name)}\`${p.count > 1 ? ` ×${p.count}` : ''}`).join(', '), '');
+    }
     const doc = raw.probes?.apiDoc;
     if (doc) {
       L.push(`## Documentation ${doc.kind} ${doc.version} (${esc(doc.path)})`, '');

@@ -67,6 +67,24 @@ test('endpoints : chemins, URL, gabarits ; fichiers statiques et espaces de noms
   assert.deepEqual(eps.map((e) => e.line), [1, 2, 3, 6, 7]);
 });
 
+test('params : query strings, searchParams, FormData et objets ; bruit écarté', () => {
+  const text = [
+    'const u = "/api/search?q=chat&page=2&sort_by=date";',
+    'url.searchParams.get("token"); formData.append("file_id", f);',
+    'fetch(x, { params: { user_id: 1, "org-slug": s } });',
+    'const data = { internalStuff: "une longue phrase avec des espaces" };',
+    'map.get("notAParam because too long and spaces");',
+  ].join('\n');
+  const p = S.params(text).sort();
+  // data/body ne sont pas des sources : ils portent trop d'objets internes (mesuré en réel).
+  assert.deepEqual(p, ['file_id', 'org-slug', 'page', 'q', 'sort_by', 'token', 'user_id']);
+});
+
+test('params : & hors chaîne-URL ignoré, doublons dédupliqués', () => {
+  assert.deepEqual(S.params('const a = 1 & 2; const b = 3 && 4;'), []);
+  assert.deepEqual(S.params('x="/a?id=1"; y="/b?id=2&id=3";'), ['id']);
+});
+
 test('analyse : un constat par type de secret, publiques et « à vérifier » à part', () => {
   const hits = [
     ...S.scan(`"${AWS}" "${SK}" "${PK}"`, 'app.js'),

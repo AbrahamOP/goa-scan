@@ -101,9 +101,10 @@ async function scanJs(sources, pageUrl) {
   const pageSite = GoaChecks.siteOf(new URL(pageUrl).hostname);
   const hits = [];
   const push = (list, third) => { for (const h of list) if (!(third && (h.public || h.sev === 'info'))) hits.push({ ...h, third }); };
-  // Endpoints : scripts du site et inline seulement (les chemins d'un SDK tiers sont du bruit).
+  // Endpoints et paramètres : scripts du site et inline seulement (ceux d'un SDK tiers sont du bruit).
   const eps = new Map();
-  const addEndpoints = (text, source) => {
+  const params = new Map();
+  const addJs = (text, source) => {
     for (const e of GoaSecrets.endpoints(text)) {
       let u;
       try { u = new URL(e.path, pageUrl); } catch { continue; }
@@ -111,10 +112,15 @@ async function scanJs(sources, pageUrl) {
       const n = GoaChecks.apiEndpoint('GET', u);
       if (!eps.has(n.url) && eps.size < 500) eps.set(n.url, { url: n.url, params: n.params, source, line: e.line });
     }
+    for (const name of GoaSecrets.params(text)) {
+      const p = params.get(name);
+      if (p) p.count++;
+      else if (params.size < 300) params.set(name, { name, count: 1 });
+    }
   };
   for (const s of sources.inline) {
     push(GoaSecrets.scan(s.text, `script inline n°${s.n}`), false);
-    addEndpoints(s.text, `script inline n°${s.n}`);
+    addJs(s.text, `script inline n°${s.n}`);
   }
 
   // Scripts du site d'abord : ce sont eux qui portent les secrets de l'application.
@@ -133,7 +139,7 @@ async function scanJs(sources, pageUrl) {
         bytes += text.length;
         external++;
         push(GoaSecrets.scan(text, shortSrc(u)), isThird(u));
-        if (!isThird(u)) addEndpoints(text, shortSrc(u));
+        if (!isThird(u)) addJs(text, shortSrc(u));
       } catch { /* script injoignable : ignoré */ }
     }
   };
@@ -146,6 +152,7 @@ async function scanJs(sources, pageUrl) {
     scanned: { inline: sources.inline.length, external, bytes, trackers: sources.urls.length - urls.length, skipped: Math.max(0, urls.length - JS_MAX_SCRIPTS) },
     hits: unique.slice(0, 100),
     endpoints: [...eps.values()],
+    params: [...params.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
   };
 }
 
@@ -299,6 +306,7 @@ async function gather(tab) {
     ipInfo,
     jsSecrets: js && { scanned: js.scanned, hits: js.hits },
     jsEndpoints: js?.endpoints || null,
+    jsParams: js?.params || null,
     net: captured,
     navError,
     dom,
@@ -405,7 +413,7 @@ function exportReport(fmt) {
   const data = {
     tool: 'Goa Scan', version: raw.version, scannedAt: raw.scannedAt,
     url: raw.url, score: report.score, grade: report.grade, counts: report.counts,
-    findings: report.findings, tech: report.tech, hosts: report.hosts, apis: report.apis, jsSecrets: raw.jsSecrets, jsEndpoints: report.jsEndpoints,
+    findings: report.findings, tech: report.tech, hosts: report.hosts, apis: report.apis, jsSecrets: raw.jsSecrets, jsEndpoints: report.jsEndpoints, jsParams: raw.jsParams,
     status: raw.status, ip: raw.ip, ipInfo: raw.ipInfo, headerSource: raw.headerSource, headers: raw.rawHeaders,
     cookies: raw.cookies, tls: raw.tls, probes: raw.probes,
   };
@@ -727,6 +735,16 @@ function apiExtra() {
       ])));
     }
     out.push(el('p', { class: 'hint', text: `Chaînes du code qui ressemblent à une adresse, dans les scripts du site et les scripts inline. ${called} appelée(s) pendant la visite ; les autres sont la surface que la navigation n’a pas touchée. On y trouve aussi des routes de pages et quelques faux positifs.${eps.length > 200 ? ' 200 premières affichées, toutes dans l’export.' : ''}` }));
+  }
+
+  const prm = raw.jsParams;
+  if (prm) {
+    out.push(el('h2', { text: `Paramètres cités dans le JavaScript (${prm.length})` }));
+    if (prm.length) {
+      out.push(el('div', { class: 'chips' }, prm.slice(0, 200).map((p) =>
+        el('span', { class: 'chip' }, p.name, p.count > 1 ? el('span', { class: 'ver', text: `×${p.count}` }) : null))));
+    }
+    out.push(el('p', { class: 'hint', text: 'Noms de paramètres de requête ou de formulaire trouvés dans le code (query strings, searchParams, FormData, objets params/data). Surface d’entrée à tester ; contient aussi des clés d’objets internes.' }));
   }
 
   const doc = raw.probes?.apiDoc;

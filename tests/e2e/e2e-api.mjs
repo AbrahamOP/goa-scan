@@ -64,10 +64,17 @@ try {
   check('endpoint JS autre domaine : api.exemple.fr/v1/orders', ep('api.exemple.fr/v1/orders')?.third === true, eps);
   check('ni logo.png ni w3.org', !eps.some((e) => /logo\.png|w3\.org/.test(e.url)), eps);
 
+  // Paramètres cités dans le JS : query strings du code (?token, ?page, ?status).
+  const prm = await r.evaluate(() => (state.raw.jsParams || []).map((p) => p.name));
+  console.log('params', JSON.stringify(prm));
+  check('params JS : page, status, token', ['page', 'status', 'token'].every((n) => prm.includes(n)), prm);
+
   await r.evaluate(() => { state.active = 'api'; renderTabs(); renderPanel(); document.body.classList.remove('full'); });
   await r.screenshot({ path: `${OUT}api-tab.png` });
   await r.evaluate(() => { const h = [...document.querySelectorAll('#panel h2')].find((x) => /Endpoints cités/.test(x.textContent)); h?.scrollIntoView(); });
   await r.screenshot({ path: `${OUT}api-tab-endpoints.png` });
+  await r.evaluate(() => { const h = [...document.querySelectorAll('#panel h2')].find((x) => /Paramètres cités/.test(x.textContent)); h?.scrollIntoView(); });
+  await r.screenshot({ path: `${OUT}api-tab-params.png` });
   await r.evaluate(() => { const h = [...document.querySelectorAll('#panel h2')].find((x) => /JavaScript/.test(x.textContent)); h?.scrollIntoView(); });
   await r.screenshot({ path: `${OUT}api-tab-secrets.png` });
 

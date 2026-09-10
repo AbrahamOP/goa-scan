@@ -136,7 +136,35 @@
     return out;
   }
 
-  const api = { scan, mask, endpoints, RULES };
+  // ── Noms de paramètres cités dans le code (surface de fuzzing) ──
+  // (a) clés des query strings dans les chaînes ; (b) accès explicites searchParams/FormData
+  // et objets params/query/data. Un nom de paramètre est court, sans espace, pas une phrase.
+  const PARAM_NAME = /^[\w.[\]-]{1,40}$/;
+  const QUERY = /[?&]([\w.[\]-]{1,40})=/g;
+  const ACCESS = /\b(?:searchParams|urlSearchParams|queryParams|formData|params|query)\s*\.\s*(?:get|set|append|has|getAll|delete)\s*\(\s*["'`]([^"'`]{1,40})["'`]/gi;
+  // Littéral de paramètres : params/query = { a: …, "b-c": … }. Pas data/body : trop d'objets
+  // internes (validation, Sentry) y passent, mesuré sur des sites réels.
+  const OBJ = /\b(?:params|queryParams|searchParams)\s*[:=]\s*\{([^{}]{0,600})\}/gi;
+  const OBJ_KEY = /(?:^|,)\s*["'`]?([\w.[\]-]{1,40})["'`]?\s*:/g;
+
+  function params(text, { max = 200 } = {}) {
+    const found = new Set();
+    const add = (name) => {
+      const n = name.trim();
+      if (n && PARAM_NAME.test(n) && !/^\d+$/.test(n) && found.size < max) found.add(n);
+    };
+    // Query strings : seulement dans des chaînes qui portent une URL/chemin, pas n'importe quel &.
+    for (const m of text.matchAll(QUOTED)) {
+      const q = m[1].indexOf('?');
+      if (q === -1) continue;
+      for (const p of m[1].slice(q).matchAll(QUERY)) add(p[1]);
+    }
+    for (const m of text.matchAll(ACCESS)) add(m[1]);
+    for (const m of text.matchAll(OBJ)) for (const k of m[1].matchAll(OBJ_KEY)) add(k[1]);
+    return [...found];
+  }
+
+  const api = { scan, mask, endpoints, params, RULES };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.GoaSecrets = api;
 })(globalThis);
