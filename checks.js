@@ -51,6 +51,38 @@
 
   const isTracker = (host) => TRACKER_HOSTS.has(host) || TRACKER_SITES.has(siteOf(host));
 
+  // ── Appels d'API ─────────────────────────────────────────────
+  // Noms de paramètres qui portent un secret, et ceux qui portent une clé d'API (souvent publique).
+  const SECRET_PARAM = /^(access[_-]?token|id[_-]?token|refresh[_-]?token|token|auth|authorization|secret|client[_-]?secret|password|passwd|pwd|pass|session(id)?|sid|jwt|bearer)$/i;
+  const KEY_PARAM = /^(api[_-]?key|apikey|key|app[_-]?key|access[_-]?key|x-api-key)$/i;
+
+  // Regroupe /users/123 et /users/456 sous /users/:id.
+  function normSegment(s) {
+    if (/^\d+$/.test(s)) return ':id';
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return ':uuid';
+    if (/^[0-9a-f]{16,}$/i.test(s)) return ':hash';
+    if (s.length > 32 && /^[\w-]+$/.test(s)) return ':token';
+    return s;
+  }
+
+  // Endpoint d'un appel : méthode + URL sans valeurs. Les valeurs ne servent qu'à repérer un
+  // secret (longueur, JWT) et ne sont jamais renvoyées.
+  function apiEndpoint(method, url) {
+    const u = url instanceof URL ? url : new URL(url);
+    const path = u.pathname.split('/').map(normSegment).join('/').slice(0, 160) || '/';
+    const params = [], secrets = [], keys = [];
+    const push = (arr, v) => { if (!arr.includes(v) && arr.length < 12) arr.push(v); };
+    for (const [k, v] of u.searchParams) {
+      const name = k.slice(0, 40);
+      push(params, name);
+      if (v.length >= 8 && (SECRET_PARAM.test(k) || /^eyJ[\w-]+\.[\w-]+\./.test(v))) push(secrets, name);
+      else if (v.length >= 8 && KEY_PARAM.test(k)) push(keys, name);
+    }
+    const m = String(method || 'GET').toUpperCase();
+    const base = `${u.protocol}//${u.host}${path}`;
+    return { key: `${m} ${base}`, method: m, url: base, params, secrets, keys };
+  }
+
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
     const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
@@ -682,6 +714,59 @@
       add({ cat: 'network', id: 'trackers', ok: true, title: 'Aucun traqueur connu contacté' });
     }
 
+    // ── API ───────────────────────────────────────────────────
+    const apis = Object.values(net?.apis || {}).map((a) => {
+      const host = hostOf(a.url);
+      return { ...a, host, third: siteOf(host) !== pageSite, tracker: isTracker(host), graphql: /\/graphql\b/i.test(a.url) };
+    }).sort((a, b) => (a.third - b.third) || (b.n - a.n));
+    const line = (a, names) => `${a.ws ? 'WS' : a.method} ${a.url}${names ? ` ?${names.join(', ')}` : ''}`;
+
+    const withSecrets = apis.filter((a) => a.secrets?.length);
+    if (withSecrets.length) {
+      add({
+        cat: 'api', id: 'api-url-secrets', sev: 'medium', title: `Jetons ou mots de passe dans l’URL d’appels API (${withSecrets.length})`,
+        detail: 'Une URL finit dans l’historique, les journaux des serveurs et des proxys, et parfois dans l’en-tête Referer. Goa Scan n’a gardé que le nom des paramètres.',
+        fix: 'Passer le jeton dans l’en-tête Authorization, ou dans le corps d’une requête POST.',
+        items: withSecrets.map((a) => line(a, a.secrets)).slice(0, 15),
+      });
+    } else if (apis.length) {
+      add({ cat: 'api', id: 'api-url-secrets', ok: true, title: 'Aucun jeton dans l’URL des appels API' });
+    }
+    const withKeys = apis.filter((a) => a.keys?.length);
+    if (withKeys.length) {
+      add({
+        cat: 'api', id: 'api-url-keys', title: `Clés d’API visibles dans l’URL (${withKeys.length})`,
+        detail: 'Normal pour une clé publique restreinte par domaine (Google Maps, recherche Algolia…). Une clé sans restriction est réutilisable par n’importe qui.',
+        items: withKeys.map((a) => line(a, a.keys)).slice(0, 15),
+      });
+    }
+    const basic = apis.filter((a) => /^basic$/i.test(a.auth || ''));
+    if (basic.length) {
+      add({
+        cat: 'api', id: 'api-basic', sev: 'low', title: 'Authentification HTTP Basic sur des API',
+        detail: 'L’identifiant et le mot de passe partent à chaque requête, simplement encodés en base64, et restent accessibles au JavaScript de la page.',
+        fix: 'Échanger les identifiants contre un jeton à durée de vie courte (OAuth 2, session HttpOnly).',
+        items: basic.map((a) => line(a)).slice(0, 15),
+      });
+    }
+    const failing5xx = apis.filter((a) => a.statuses?.some((s) => s >= 500));
+    if (failing5xx.length) {
+      add({
+        cat: 'api', id: 'api-5xx', title: `API en erreur serveur (${failing5xx.length})`,
+        detail: 'Une erreur 5xx trahit parfois une trace de pile ou une version dans la réponse.',
+        items: failing5xx.map((a) => `${line(a)} → ${a.statuses.join(', ')}`).slice(0, 15),
+      });
+    }
+    const doc = input.probes?.apiDoc;
+    if (doc) {
+      add({
+        cat: 'api', id: 'api-doc', sev: 'low', title: `Documentation d’API publique (${doc.kind} ${doc.version})`,
+        detail: `${doc.path} décrit ${doc.total} route(s) : la surface d’attaque se lit directement. Normal pour une API publique, à éviter pour une API interne.`,
+        fix: 'Protéger la documentation (authentification, réseau interne) ou ne pas la publier en production.',
+        items: [doc.path],
+      });
+    }
+
     // ── Score ─────────────────────────────────────────────────
     let score = 100 - findings.filter((f) => !f.ok).reduce((s, f) => s + WEIGHT[f.sev], 0);
     if (!https) score = Math.min(score, 40);
@@ -691,7 +776,7 @@
     const counts = Object.fromEntries(ORDER.map((s) => [s, findings.filter((f) => !f.ok && f.sev === s).length]));
     findings.sort((a, b) => (a.ok - b.ok) || (ORDER.indexOf(a.sev) - ORDER.indexOf(b.sev)));
 
-    return { score, grade: gradeOf(score), counts, findings, hosts, tech: detectTech(input), https };
+    return { score, grade: gradeOf(score), counts, findings, hosts, apis, tech: detectTech(input), https };
   }
 
   function detectTech(input) {
@@ -732,7 +817,7 @@
     return tech;
   }
 
-  const api = { analyze, detectTech, parseCsp, siteOf, isTracker, cmpVer, gradeOf, hostMatches };
+  const api = { analyze, detectTech, parseCsp, siteOf, isTracker, cmpVer, gradeOf, hostMatches, apiEndpoint };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.GoaChecks = api;
 })(globalThis);

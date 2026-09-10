@@ -10,6 +10,12 @@ importScripts('checks.js', 'vulndb.js', 'vendor/vulndb-data.js', 'collector.js')
 
 const MAX_HOSTS = 300;
 const MAX_INSECURE = 30;
+const MAX_APIS = 150;
+// fetch/XHR et WebSocket, hors ressources statiques chargées par script.
+const API_TYPES = ['xmlhttprequest', 'websocket'];
+const STATIC_EXT = /\.(m?js|css|map|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|mp4|webm|mp3)$/i;
+// requestId → { tabId, key } pour rattacher en-têtes et statut à l'endpoint. En mémoire seulement.
+const pending = new Map();
 const DEFAULTS = { autoScan: true, activeMode: false };
 
 const tabs = new Map();
@@ -50,7 +56,7 @@ function onRequest(d) {
     if (!prev || prev.requestId !== d.requestId) {
       tabs.set(d.tabId, {
         requestId: d.requestId, url: d.url, at: Date.now(),
-        redirects: [], main: null, requests: 0, hosts: {}, insecure: [], truncated: false,
+        redirects: [], main: null, requests: 0, hosts: {}, insecure: [], truncated: false, apis: {},
       });
     } else {
       prev.url = d.url;
@@ -76,7 +82,58 @@ function onRequest(d) {
   if ((u.protocol === 'http:' || u.protocol === 'ws:') && rec.url.startsWith('https:') && rec.insecure.length < MAX_INSECURE) {
     rec.insecure.push({ url: d.url.slice(0, 300), type: d.type });
   }
+  if (API_TYPES.includes(d.type) && !STATIC_EXT.test(u.pathname)) addApi(rec, d, u);
   touch(d.tabId);
+}
+
+function addApi(rec, d, u) {
+  const e = GoaChecks.apiEndpoint(d.method, u);
+  rec.apis ||= {};
+  let a = rec.apis[e.key];
+  if (!a) {
+    if (Object.keys(rec.apis).length >= MAX_APIS) { rec.apisTruncated = true; return; }
+    a = rec.apis[e.key] = { method: e.method, url: e.url, ws: d.type === 'websocket', n: 0, params: [], secrets: [], keys: [], statuses: [], auth: null, ctype: null, cors: null };
+  }
+  a.n++;
+  for (const f of ['params', 'secrets', 'keys']) for (const v of e[f]) if (!a[f].includes(v) && a[f].length < 12) a[f].push(v);
+  pending.set(d.requestId, { tabId: d.tabId, key: e.key });
+  if (pending.size > 1000) pending.delete(pending.keys().next().value);
+}
+
+function apiOf(d) {
+  const p = pending.get(d.requestId);
+  const a = p && tabs.get(p.tabId)?.apis?.[p.key];
+  return a ? [a, p.tabId] : [];
+}
+
+// Schéma d'authentification seulement (Bearer, Basic…), jamais la valeur.
+function onApiSend(d) {
+  const [a, tabId] = apiOf(d);
+  if (!a) return;
+  const hs = d.requestHeaders || [];
+  const auth = hs.find((h) => h.name.toLowerCase() === 'authorization');
+  if (auth) a.auth = (auth.value || '').trim().split(/\s+/)[0].slice(0, 20) || 'oui';
+  else if (hs.some((h) => /^(x-)?api-key$/i.test(h.name))) a.auth = 'clé API';
+  else return;
+  touch(tabId);
+}
+
+function onApiHeaders(d) {
+  const [a, tabId] = apiOf(d);
+  if (!a) return;
+  if (!a.statuses.includes(d.statusCode) && a.statuses.length < 6) a.statuses.push(d.statusCode);
+  const get = (n) => (d.responseHeaders || []).find((h) => h.name.toLowerCase() === n)?.value;
+  const ct = get('content-type');
+  if (ct) a.ctype = ct.split(';')[0].trim().slice(0, 60);
+  const acao = get('access-control-allow-origin');
+  if (acao) a.cors = acao.slice(0, 100);
+  touch(tabId);
+}
+
+function onApiEnd(d) {
+  const [a, tabId] = apiOf(d);
+  pending.delete(d.requestId);
+  if (a && d.error && !a.statuses.length) { a.error = d.error.slice(0, 40); touch(tabId); }
 }
 
 function onMainHeaders(d) {
@@ -117,6 +174,11 @@ chrome.webRequest.onHeadersReceived.addListener((d) => { ready.then(() => onMain
 chrome.webRequest.onBeforeRedirect.addListener((d) => { ready.then(() => onMainRedirect(d)); }, main);
 chrome.webRequest.onCompleted.addListener((d) => { ready.then(() => onMainCompleted(d)); }, main);
 chrome.webRequest.onErrorOccurred.addListener((d) => { ready.then(() => onMainError(d)); }, main);
+const apiFilter = { urls: ['<all_urls>'], types: API_TYPES };
+chrome.webRequest.onSendHeaders.addListener((d) => { ready.then(() => onApiSend(d)); }, apiFilter, ['requestHeaders']);
+chrome.webRequest.onHeadersReceived.addListener((d) => { ready.then(() => onApiHeaders(d)); }, apiFilter, ['responseHeaders']);
+chrome.webRequest.onCompleted.addListener((d) => { ready.then(() => onApiEnd(d)); }, apiFilter);
+chrome.webRequest.onErrorOccurred.addListener((d) => { ready.then(() => onApiEnd(d)); }, apiFilter);
 
 // ── Analyse partagée (sans certificat : réservé au popup, qui a le débogueur) ──
 function headerMap(list) {

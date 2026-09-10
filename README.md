@@ -10,6 +10,19 @@ besoin, une requête de secours pour les en-têtes). Le mode actif (opt-in) ajou
 sondes vers ce même site et des requêtes DNS-over-HTTPS. Les liens « Aller plus loin »
 (SSL Labs, VirusTotal…) n'envoient le domaine qu'au clic.
 
+## Ce qui a été ajouté en 0.3.0
+
+- **Onglet API** : chaque appel fetch, XHR ou WebSocket de la page, regroupé par endpoint
+  (`/users/123` et `/users/456` → `/users/:id`), avec méthode, nombre d'appels, statuts,
+  type de réponse et schéma d'authentification (Bearer, Basic, clé API). Seuls les *noms*
+  des paramètres sont gardés, jamais les valeurs ni les jetons.
+- Constats : jeton ou mot de passe dans l'URL (moyenne), clé d'API dans l'URL (info),
+  HTTP Basic (faible), API en 5xx (info).
+- **Mode actif** : recherche d'une spécification OpenAPI/Swagger publique sur 8 chemins
+  courants (`/openapi.json`, `/v3/api-docs`…), confirmée par le contenu, et liste de ses routes.
+- IP du serveur lue sur une connexion directe (0.2.1) : une page resservie par le cache
+  affichait l'IP de sa première connexion.
+
 ## Ce qui a été ajouté en 0.2.0
 
 - **Note automatique sur l'icône** et alerte si le **certificat d'un site change**
@@ -30,6 +43,7 @@ sondes vers ce même site et des requêtes DNS-over-HTTPS. Les liens « Aller pl
 | **Exposition** | version du serveur, `X-Powered-By` & co, `meta generator`, bibliothèques JS vulnérables (jQuery, jQuery UI, AngularJS, Bootstrap, Lodash, Moment), `security.txt` |
 | **Cookies** | Secure, HttpOnly sur les cookies de session, SameSite — tableau complet, **sans jamais lire les valeurs** |
 | **Contenu** | mot de passe sur page HTTP, formulaire posté en clair ou vers un autre site, scripts tiers sans SRI, iframes tierces sans sandbox, jetons (JWT…) dans localStorage/sessionStorage (noms de clés seulement), commentaires HTML sensibles, e-mails exposés, scripts inline et gestionnaires `on*` |
+| **API** | appels fetch/XHR/WebSocket (méthode, endpoint regroupé en `:id`, statut, type de réponse, schéma d'auth), jetons ou clés dans l'URL, HTTP Basic, erreurs 5xx ; en mode actif, documentation OpenAPI/Swagger publique et ses routes |
 | **Réseau** | requêtes émises par la page, domaines contactés, tiers, traqueurs connus, IP du serveur |
 
 Technologies détectées : serveur, CDN (Cloudflare, CloudFront, Fastly, Vercel,
@@ -130,4 +144,6 @@ python3 tests/e2e/fixture.py &
 npm i --no-save puppeteer-core && node tests/e2e/e2e.mjs
 node tests/e2e/e2e-cert.mjs   # copie avec « debugger » obligatoire : github.com + badssl.com
 node tests/e2e/e2e-ip.mjs     # IP juste après un rechargement depuis le cache et un retour arrière
+python3 tests/e2e/fixture-active.py &
+node tests/e2e/e2e-api.mjs    # onglet API : appels capturés, Bearer/Basic, secrets dans l'URL, doc OpenAPI
 ```

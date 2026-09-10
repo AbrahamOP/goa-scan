@@ -11,6 +11,7 @@
     ['cookies', 'Cookies'],
     ['content', 'Contenu de la page'],
     ['active', 'Mode actif (fichiers & DNS)'],
+    ['api', 'API'],
     ['network', 'Réseau'],
   ];
   const esc = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
@@ -52,6 +53,22 @@
     if (ok.length) {
       L.push('## Points conformes', '');
       for (const f of ok) L.push(`- ${esc(f.title)}`);
+      L.push('');
+    }
+
+    if (report.apis?.length) {
+      L.push('## Appels d’API', '');
+      L.push('| Méthode | Endpoint | Appels | Statut | Auth |', '|---|---|---|---|---|');
+      for (const a of report.apis) {
+        L.push(`| ${a.ws ? 'WS' : a.method} | ${esc(a.url)}${a.params.length ? ` ?${esc(a.params.join('&'))}` : ''} | ${a.n} | ${esc(a.statuses.join(' ') || a.error) || '—'} | ${esc(a.auth) || '—'} |`);
+      }
+      L.push('', '_Noms de paramètres seulement : les valeurs ne sont pas collectées._', '');
+    }
+    const doc = raw.probes?.apiDoc;
+    if (doc) {
+      L.push(`## Documentation ${doc.kind} ${doc.version} (${esc(doc.path)})`, '');
+      L.push('| Méthode | Route | Description |', '|---|---|---|');
+      for (const r of doc.routes) L.push(`| ${r.method} | ${esc(r.path)} | ${esc(r.summary) || '—'} |`);
       L.push('');
     }
 

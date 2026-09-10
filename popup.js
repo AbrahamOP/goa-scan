@@ -11,6 +11,7 @@ const TABS = [
   { id: 'cookies', label: 'Cookies', cats: ['cookies'] },
   { id: 'content', label: 'Contenu', cats: ['content'] },
   { id: 'active', label: 'Actif', cats: ['active'], optional: true },
+  { id: 'api', label: 'API', cats: ['api'] },
   { id: 'network', label: 'Réseau', cats: ['network'] },
 ];
 const SAMESITE = { no_restriction: 'None', lax: 'Lax', strict: 'Strict', unspecified: 'Non défini' };
@@ -328,7 +329,7 @@ function exportReport(fmt) {
   const data = {
     tool: 'Goa Scan', version: raw.version, scannedAt: raw.scannedAt,
     url: raw.url, score: report.score, grade: report.grade, counts: report.counts,
-    findings: report.findings, tech: report.tech, hosts: report.hosts,
+    findings: report.findings, tech: report.tech, hosts: report.hosts, apis: report.apis,
     status: raw.status, ip: raw.ip, ipInfo: raw.ipInfo, headerSource: raw.headerSource, headers: raw.rawHeaders,
     cookies: raw.cookies, tls: raw.tls, probes: raw.probes,
   };
@@ -378,12 +379,14 @@ function renderTabs() {
       onclick: () => { state.active = t.id; renderTabs(); renderPanel(); },
     }, t.label, n ? el('span', { class: 'n', text: n }) : null);
   }));
+  // La barre défile quand tous les onglets ne tiennent pas : garder l'onglet actif visible.
+  nav.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 function renderPanel() {
   const panel = $('panel');
   const def = TABS.find((t) => t.id === state.active);
-  const extras = { cert: certExtra, headers: headersExtra, cookies: cookiesExtra, content: contentExtra, active: activeExtra, network: networkExtra };
+  const extras = { cert: certExtra, headers: headersExtra, cookies: cookiesExtra, content: contentExtra, active: activeExtra, api: apiExtra, network: networkExtra };
   panel.replaceChildren(...(def.id === 'summary' ? summaryPanel() : categoryPanel(def, extras[def.id])));
   panel.scrollTop = 0;
 }
@@ -575,7 +578,56 @@ function activeExtra() {
     if (d.dmarc) out.push(el('p', { class: 'hint', text: `DMARC : ${d.dmarc}` }));
   }
   out.push(el('h2', { text: 'Fichiers testés' }),
-    el('p', { class: 'hint', text: `${raw.probes.files.length} fichier(s) accessible(s) sur ${9} chemins sondés. Les tests sans résultat ne sont pas listés.` }));
+    el('p', { class: 'hint', text: `${raw.probes.files.length} fichier(s) accessible(s) sur ${GoaProbes.FILE_COUNT} chemins sondés, plus ${GoaProbes.API_DOC_COUNT} emplacements de documentation d’API (voir l’onglet API). Les tests sans résultat ne sont pas listés.` }));
+  return out;
+}
+
+const shortType = (ct) => (ct ? ct.replace(/^(application|text)\//, '') : '—');
+
+function apiExtra() {
+  const { raw, report } = state;
+  const out = [];
+  if (!raw.net) {
+    out.push(captureNote());
+  } else {
+    const apis = report.apis;
+    const tag = (t) => el('span', { class: 'tag', text: ` · ${t}` });
+    out.push(el('h2', { text: 'Appels d’API de la page' }), facts([
+      ['Endpoints', apis.length],
+      ['Appels', apis.reduce((s, a) => s + a.n, 0)],
+      ['Domaines', new Set(apis.map((a) => a.host)).size],
+    ]));
+    if (apis.length) {
+      // Chemin seul pour les appels vers la page elle-même : la colonne reste lisible dans le popup.
+      const pageOrigin = new URL(raw.url).origin;
+      const shown = (u) => (u.startsWith(`${pageOrigin}/`) ? u.slice(pageOrigin.length) : u.replace(/^(https?|wss?):\/\//, ''));
+      const tbl = table(['Méthode', 'Endpoint', 'Appels', 'Statut', 'Réponse', 'Auth'], apis.map((a) => [
+        a.ws ? 'WS' : a.method,
+        el('span', { title: a.url }, shown(a.url),
+          a.tracker ? tag('traqueur') : a.third ? tag('tiers') : null, a.graphql ? tag('GraphQL') : null,
+          a.params.length ? el('div', { class: 'params', text: `?${a.params.join('&')}` }) : null),
+        a.n,
+        a.statuses.join(' ') || a.error || '—',
+        shortType(a.ctype),
+        a.auth || '—',
+      ]));
+      tbl.firstChild.classList.add('api');
+      out.push(tbl);
+      if (raw.net.apisTruncated) out.push(el('p', { class: 'hint', text: `Liste tronquée à ${apis.length} endpoints.` }));
+    } else {
+      out.push(el('p', { class: 'hint', text: 'Aucun appel fetch, XHR ou WebSocket depuis le chargement de la page.' }));
+    }
+    out.push(el('p', { class: 'hint', text: 'Les identifiants dans les chemins deviennent :id, :uuid, :hash ou :token pour regrouper les appels. Seuls les noms des paramètres et le type d’authentification sont gardés, jamais leurs valeurs. Les appels faits après l’analyse apparaissent en cliquant sur Relancer.' }));
+  }
+
+  const doc = raw.probes?.apiDoc;
+  if (doc) {
+    out.push(el('h2', { text: `Documentation ${doc.kind} ${doc.version}${doc.title ? ` — ${doc.title}` : ''}` }),
+      el('p', { class: 'hint', text: `Trouvée sur ${doc.path} : ${doc.total} route(s)${doc.total > doc.routes.length ? `, ${doc.routes.length} affichées` : ''}.` }),
+      table(['Méthode', 'Route', 'Description'], doc.routes.map((r) => [r.method, r.path, r.summary || '—'])));
+  } else if (!state.settings.activeMode) {
+    out.push(el('p', { class: 'hint', text: 'Le mode actif cherche aussi une documentation OpenAPI ou Swagger publique (openapi.json, swagger.json, /v3/api-docs…) et en liste les routes.' }));
+  }
   return out;
 }
 

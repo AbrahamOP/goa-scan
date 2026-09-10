@@ -1,0 +1,59 @@
+// Onglet API : appels fetch capturés (méthode, :id, statut, auth), secrets dans l'URL, doc OpenAPI
+// trouvée en mode actif. Lancer d'abord : python3 tests/e2e/fixture-active.py &
+import puppeteer from 'puppeteer-core';
+import fs from 'node:fs';
+const EXT = new URL('../../', import.meta.url).pathname;
+const OUT = process.env.OUT || '/tmp/goa-scan-shots/';
+fs.mkdirSync(OUT, { recursive: true });
+const URL_ = 'http://127.0.0.1:8766/';
+
+const browser = await puppeteer.launch({ executablePath: process.env.CHROME || '/usr/bin/chromium', headless: true, pipe: true, enableExtensions: [EXT], args: ['--no-sandbox'] });
+const errors = [];
+let failed = 0;
+const check = (label, ok, got) => { if (!ok) failed++; console.log(ok ? 'ok ' : 'KO ', label, ok ? '' : JSON.stringify(got)); };
+try {
+  const sw = await browser.waitForTarget((t) => t.type() === 'service_worker' && t.url().startsWith('chrome-extension://'), { timeout: 15000 });
+  const base = `chrome-extension://${new URL(sw.url()).host}/popup.html`;
+  // Juste après le lancement, le service worker n'a pas encore branché webRequest : on l'attend.
+  await (await sw.worker()).evaluate(() => ready);
+  const page = await browser.newPage();
+  await page.goto(URL_, { waitUntil: 'networkidle0' });
+
+  const r = await browser.newPage();
+  r.on('pageerror', (e) => errors.push(e.message));
+  // Les 404 des sondes (fichiers absents) sont attendues.
+  r.on('console', (m) => { if (m.type() === 'error' && !/status of 404/.test(m.text())) errors.push(m.text()); });
+  await r.goto(base);
+  const tabId = await r.evaluate(async (u) => (await chrome.tabs.query({})).find((x) => x.url === u)?.id, URL_);
+  await r.setViewport({ width: 460, height: 620 });
+  await r.goto(`${base}?tab=${tabId}`);
+  await r.waitForFunction(() => typeof state !== 'undefined' && state.report && !state.busy, { timeout: 30000, polling: 250 });
+
+  const apis = await r.evaluate(() => state.report.apis.map((a) => ({ m: a.method, url: a.url, st: a.statuses, auth: a.auth, params: a.params, secrets: a.secrets, ct: a.ctype })));
+  console.log(JSON.stringify(apis, null, 1));
+  const by = (m, path) => apis.find((a) => a.m === m && a.url.endsWith(path));
+  check('GET /api/users/:id regroupé (2 appels)', by('GET', '/api/users/:id') && apis.filter((a) => a.url.endsWith('/api/users/:id')).length === 1, apis);
+  check('Bearer détecté', by('GET', '/api/users/:id')?.auth === 'Bearer', by('GET', '/api/users/:id'));
+  check('POST /api/orders 201 Basic json', by('POST', '/api/orders')?.st.includes(201) && by('POST', '/api/orders')?.auth === 'Basic' && by('POST', '/api/orders')?.ct === 'application/json', by('POST', '/api/orders'));
+  check('/api/fail 500', by('GET', '/api/fail')?.st.includes(500), by('GET', '/api/fail'));
+  check('aucune valeur de jeton stockée', !JSON.stringify(apis).includes('eyJ'), apis);
+  const ids = await r.evaluate(() => state.report.findings.filter((f) => f.cat === 'api' && !f.ok).map((f) => `${f.sev}:${f.id}`));
+  check('constats API', ['medium:api-url-secrets', 'low:api-basic', 'info:api-5xx'].every((x) => ids.includes(x)), ids);
+
+  await r.evaluate(() => { state.active = 'api'; renderTabs(); renderPanel(); document.body.classList.remove('full'); });
+  await r.screenshot({ path: `${OUT}api-tab.png` });
+
+  // Mode actif : la spécification OpenAPI doit être trouvée, pas les catch-all HTML.
+  await r.evaluate(() => document.getElementById('tg-active').click());
+  await r.waitForFunction(() => !state.busy && state.settings.activeMode && state.raw.probes, { timeout: 30000, polling: 250 });
+  const doc = await r.evaluate(() => state.raw.probes.apiDoc && { path: state.raw.probes.apiDoc.path, total: state.raw.probes.apiDoc.total });
+  check('doc OpenAPI trouvée sur /openapi.json, 3 routes', doc?.path === '/openapi.json' && doc.total === 3, doc);
+  await r.evaluate(() => { state.active = 'api'; renderTabs(); renderPanel(); });
+  await r.evaluate(() => { document.getElementById('panel').scrollTop = 10000; });
+  await r.screenshot({ path: `${OUT}api-tab-doc.png` });
+  await r.evaluate(() => document.getElementById('tg-active').click());
+} finally {
+  console.log('errors', JSON.stringify(errors));
+  await browser.close();
+}
+process.exit(failed || errors.length ? 1 : 0);

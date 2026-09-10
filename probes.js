@@ -30,6 +30,40 @@
     }
   }
 
+  // Emplacements habituels d'une spécification OpenAPI/Swagger (FastAPI, Spring, ASP.NET…).
+  const API_DOCS = ['/openapi.json', '/swagger.json', '/v3/api-docs', '/v2/api-docs', '/api-docs', '/api/openapi.json', '/api/swagger.json', '/swagger/v1/swagger.json'];
+  const METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'];
+
+  // Texte → { kind, version, title, total, routes } ou null si ce n'est pas une spécification.
+  function parseApiDoc(text) {
+    let j;
+    try { j = JSON.parse(text); } catch { return null; }
+    const version = j?.openapi || j?.swagger;
+    if (!version || !j.paths || typeof j.paths !== 'object') return null;
+    const prefix = j.swagger && typeof j.basePath === 'string' ? j.basePath.replace(/\/$/, '') : '';
+    const routes = [];
+    for (const [path, ops] of Object.entries(j.paths)) {
+      for (const m of METHODS) {
+        if (ops && ops[m]) routes.push({ method: m.toUpperCase(), path: (prefix + path).slice(0, 200), summary: String(ops[m].summary || '').slice(0, 100) });
+      }
+    }
+    return { kind: j.openapi ? 'OpenAPI' : 'Swagger', version: String(version).slice(0, 10), title: String(j.info?.title || '').slice(0, 100), total: routes.length, routes: routes.slice(0, 300) };
+  }
+
+  async function probeApiDoc(origin) {
+    const found = await Promise.all(API_DOCS.map(async (path) => {
+      try {
+        const r = await fetch(origin + path, { credentials: 'omit', cache: 'no-store', redirect: 'manual', signal: signal() });
+        if (!r.ok || r.status >= 300 || Number(r.headers.get('content-length')) > 5e6) return null;
+        const doc = parseApiDoc((await r.text()).slice(0, 5e6));
+        return doc && { path, ...doc };
+      } catch {
+        return null;
+      }
+    }));
+    return found.find(Boolean) || null;
+  }
+
   // DNS-over-HTTPS (Cloudflare), format JSON. Ne renvoie que le domaine, jamais de contenu de page.
   async function doh(name, type) {
     try {
@@ -64,14 +98,15 @@
   async function run(url) {
     const u = new URL(url);
     if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
-    const [files, dns] = await Promise.all([
+    const [files, dns, apiDoc] = await Promise.all([
       Promise.all(FILES.map((f) => probeFile(u.origin, f))).then((r) => r.filter(Boolean)),
       probeDns(u.hostname),
+      probeApiDoc(u.origin),
     ]);
-    return { ranAt: Date.now(), files, dns };
+    return { ranAt: Date.now(), files, dns, apiDoc };
   }
 
-  const api = { run, probeDns };
+  const api = { run, probeDns, parseApiDoc, FILE_COUNT: FILES.length, API_DOC_COUNT: API_DOCS.length };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.GoaProbes = api;
 })(globalThis);
