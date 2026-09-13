@@ -1,9 +1,8 @@
 # Soumission au Chrome Web Store — Goa Scan
 
 Tout est prêt côté code. Cette fiche rassemble le paquet et les textes à
-coller dans le formulaire du store. **Pour ne pas publier tout de suite :
-choisir la visibilité « Non répertorié » (_Unlisted_) ou « Privé » à l'étape
-Distribution.** Le passage en « Public » se fait plus tard, en un clic.
+coller dans le formulaire du store. Visibilité retenue à l'étape Distribution :
+**« Public »** (« Non répertorié » reste possible pour un test par lien direct).
 
 ## 1. Construire le paquet
 
@@ -17,9 +16,8 @@ version, absence de code distant) et n'embarque que les fichiers exécutés
 
 ## 2. Compte développeur
 
-- Un compte Chrome Web Store Developer est nécessaire (frais d'inscription
-  unique de 5 USD). C'est **manuel**, à faire par un humain sur
-  https://chrome.google.com/webstore/devconsole.
+- Compte Chrome Web Store Developer : celui qui publie déjà GoaBlockAD suffit.
+  La soumission est **manuelle**, sur https://chrome.google.com/webstore/devconsole.
 - Créer un article, téléverser le zip.
 
 ## 3. Objet unique (_single purpose_)
@@ -47,8 +45,8 @@ exécuté à distance. Répondre « Non » à « utilise-t-il du code distant »
 
 ## 6. Confidentialité des données
 
-- Politique de confidentialité : héberger `PRIVACY.md` à une URL accessible et
-  la renseigner dans le formulaire (onglet Confidentialité).
+- Politique de confidentialité (onglet Confidentialité) :
+  https://github.com/AbrahamOP/goa-scan/blob/main/PRIVACY.md
 - Déclaration d'usage des données : **ne collecte aucune donnée utilisateur**.
   Cocher les trois engagements (pas de vente, usage conforme à l'objet unique,
   pas de transfert hors objet).
